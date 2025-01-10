@@ -9,7 +9,7 @@ import (
 	"io/ioutil"
 )
 
-// EncryptFile criptografa o conteúdo de um arquivo
+// EncryptFile encrypts the contents of a file
 func EncryptFile(file io.Reader, key string) ([]byte, error) {
 	plaintext, err := ioutil.ReadAll(file)
 	if err != nil {
@@ -35,7 +35,7 @@ func EncryptFile(file io.Reader, key string) ([]byte, error) {
 	return ciphertext, nil
 }
 
-// DecryptFile descriptografa o conteúdo de um arquivo
+// DecryptFile decrypts the contents of a file
 func DecryptFile(ciphertext []byte, key string) ([]byte, error) {
 	block, err := aes.NewCipher([]byte(key))
 	if err != nil {
@@ -61,7 +61,7 @@ func DecryptFile(ciphertext []byte, key string) ([]byte, error) {
 	return plaintext, nil
 }
 
-// GenerateEncryptionKey gera uma chave de criptografia
+// GenerateEncryptionKey generates an encryption key
 func GenerateEncryptionKey() string {
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {

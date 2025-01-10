@@ -5,7 +5,7 @@ import (
 	"os"
 )
 
-// SendEmail envia um e-mail para o destinatário especificado
+// SendEmail sends an email to the specified recipient
 func SendEmail(to, subject, body string) error {
 	from := os.Getenv("EMAIL_FROM")
 	password := os.Getenv("EMAIL_PASSWORD")

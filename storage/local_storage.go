@@ -17,7 +17,7 @@ func NewLocalStorage(basePath string) *LocalStorage {
 }
 
 func (s *LocalStorage) Upload(file io.Reader, filename string) (string, error) {
-	logrus.Infof("Iniciando upload do arquivo: %s", filename)
+	logrus.Infof("Starting file upload: %s", filename)
 	path := filepath.Join(s.BasePath, filename)
 	out, err := os.Create(path)
 	if err != nil {
@@ -32,13 +32,13 @@ func (s *LocalStorage) Upload(file io.Reader, filename string) (string, error) {
 }
 
 func (s *LocalStorage) Download(filename string) (*os.File, error) {
-	logrus.Infof("Iniciando download do arquivo: %s", filename)
+	logrus.Infof("Starting file download: %s", filename)
 	path := filepath.Join(s.BasePath, filename)
 	return os.Open(path)
 }
 
 func (s *LocalStorage) Delete(filename string) error {
-	logrus.Infof("Iniciando exclusão do arquivo: %s", filename)
+	logrus.Infof("Initiating file deletion: %s", filename)
 	path := filepath.Join(s.BasePath, filename)
 	return os.Remove(path)
 }

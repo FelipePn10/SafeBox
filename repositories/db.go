@@ -14,7 +14,7 @@ func InitDB() {
 	dsn := "host=localhost user=usuario password=1234 dbname=safeboxdb port=5432 sslmode=disable"
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
 	if err != nil {
-		logrus.Fatal("Erro ao conectar ao banco de dados: ", err)
+		logrus.Fatal("Error connecting to database ", err)
 	}
 	DBConection = db
 	db.AutoMigrate(&models.User{})

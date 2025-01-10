@@ -18,13 +18,13 @@ func NewAuthService(userRepo *repositories.UserRepository) *AuthService {
 }
 
 func (s *AuthService) Register(user *models.User) error {
-	// Definir plano e limite de armazenamento para novos usuários
+	// Set storage plan and limit for new users
 	user.Plan = "free"
 	user.StorageLimit = 1024 * 1024 * 1024 * 1024 // 1024 GB
 
 	if err := s.userRepo.Create(user); err != nil {
-		logrus.Error("Erro ao registrar usuário: ", err)
-		return errors.New("erro ao registrar usuário")
+		logrus.Error("Error registering user: ", err)
+		return errors.New("error registering user")
 	}
 	return nil
 }
@@ -32,19 +32,19 @@ func (s *AuthService) Register(user *models.User) error {
 func (s *AuthService) Login(username, password string) (string, error) {
 	user, err := s.userRepo.FindByUsername(username)
 	if err != nil {
-		logrus.Error("Usuário não encontrado: ", err)
-		return "", errors.New("usuário não encontrado")
+		logrus.Error("User not found: ", err)
+		return "", errors.New("user not found")
 	}
 
 	if !utils.ComparePasswords(user.Password, password) {
-		logrus.Error("Senha inválida")
-		return "", errors.New("senha inválida")
+		logrus.Error("Invalid password")
+		return "", errors.New("invalid password")
 	}
 
 	tokens, err := utils.GenerateOAuthToken(user.Username)
 	if err != nil {
-		logrus.Error("Erro ao gerar token: ", err)
-		return "", errors.New("erro ao gerar token")
+		logrus.Error("Error generating tokens: ", err)
+		return "", errors.New("error generating token")
 	}
 
 	return tokens.AccessToken, nil

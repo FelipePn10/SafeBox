@@ -26,14 +26,14 @@ var (
 
 // OAuthLogin redirects the user to Google's OAuth 2.0 authentication page
 func OAuthLogin(c *gin.Context) {
-	logrus.Info("Redirecionando para a página de autenticação do Google OAuth 2.0")
+	logrus.Info("Redirecting to Google OAuth 2.0 authentication page")
 	url := googleOAuthConfig.AuthCodeURL("state-token", oauth2.AccessTypeOffline)
 	c.Redirect(http.StatusFound, url)
 }
 
 // OAuthCallback handles the OAuth 2.0 callback and retrieves user information
 func OAuthCallback(c *gin.Context) {
-	logrus.Info("Recebendo callback do Google OAuth 2.0")
+	logrus.Info("Receiving callback from Google OAuth 2.0")
 	// Retrieve the authorization code from query parameters
 	code := c.Query("code")
 	if code == "" {

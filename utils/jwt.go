@@ -20,13 +20,13 @@ type Claims struct {
 func GenerateOAuthToken(username string) (*Tokens, error) {
 	logrus.Infof("Gerando tokens OAuth para o usuário: %s", username)
 	// Generate Access Token
-	accessToken, err := generateJWT(username, 15*time.Minute) // Válido por 15 minutos
+	accessToken, err := generateJWT(username, 15*time.Minute) // Valid for 15 minutes
 	if err != nil {
 		return nil, err
 	}
 
 	// Gerar Refresh Token
-	refreshToken, err := generateJWT(username, 7*24*time.Hour) // Válido por 7 dias
+	refreshToken, err := generateJWT(username, 7*24*time.Hour) // Valid for 7 days
 	if err != nil {
 		return nil, err
 	}
