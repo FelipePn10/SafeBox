@@ -18,7 +18,7 @@ var OAuthConfig *oauth2.Config
 func init() {
 	err := godotenv.Load()
 	if err != nil {
-		log.Fatal("Erro ao carregar variáveis de ambiente: ", err)
+		log.Fatal("Error loading environment variables: ", err)
 	}
 
 	clientID := os.Getenv("CLIENT_ID")
@@ -38,7 +38,7 @@ func init() {
 }
 
 func GenerateOAuthToken(username string) (*oauth2.Token, error) {
-	logrus.Infof("Gerando token OAuth para o usuário: %s", username)
+	logrus.Infof("Generating OAuth token for user: %s", username)
 	token := &oauth2.Token{
 		AccessToken:  fmt.Sprintf("access-token-%s", username),
 		RefreshToken: fmt.Sprintf("refresh-token-%s", username),
@@ -47,7 +47,7 @@ func GenerateOAuthToken(username string) (*oauth2.Token, error) {
 }
 
 func RefreshOAuthToken(refreshToken string) (*oauth2.Token, error) {
-	logrus.Infof("Atualizando token OAuth com refresh token: %s", refreshToken)
+	logrus.Infof("Updating OAuth token with refresh token: %s", refreshToken)
 	token := &oauth2.Token{RefreshToken: refreshToken}
 	newToken, err := OAuthConfig.TokenSource(context.Background(), token).Token()
 	if err != nil {
@@ -57,7 +57,7 @@ func RefreshOAuthToken(refreshToken string) (*oauth2.Token, error) {
 }
 
 func RevokeToken(token string) error {
-	logrus.Infof("Revogando token OAuth: %s", token)
+	logrus.Infof("Revoking OAuth token: %s", token)
 	req, err := http.NewRequest("POST", "https://oauth2.googleapis.com/revoke", strings.NewReader("token="+token))
 	if err != nil {
 		return fmt.Errorf("failed to create revoke request: %w", err)
