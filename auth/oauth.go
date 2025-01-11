@@ -3,21 +3,38 @@ package auth
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
+	"os"
 	"strings"
 
+	"github.com/joho/godotenv"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/oauth2"
 )
 
-var OAuthConfig = &oauth2.Config{
-	ClientID:     "l8iZ8VXHsSPXEdw6vcQdHxYrwq4u6czI",
-	ClientSecret: "vK_67EkC-IT0Tc63d7Kt7p_ObEff9TNn6bh7iy8nQXU9Yl5Q3gvXzUG06JQxicsV",
-	Scopes:       []string{"openid", "profile", "email"},
-	Endpoint: oauth2.Endpoint{
-		AuthURL:  "https://accounts.google.com/o/oauth2/auth",
-		TokenURL: "https://oauth2.googleapis.com/token",
-	},
+var OAuthConfig *oauth2.Config
+
+func init() {
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatal("Erro ao carregar variáveis de ambiente: ", err)
+	}
+
+	clientID := os.Getenv("CLIENT_ID")
+	clientSecret := os.Getenv("CLIENT_SECRET")
+	authURL := os.Getenv("AUTH_URL")
+	tokenURL := os.Getenv("TOKEN_URL")
+
+	OAuthConfig = &oauth2.Config{
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+		Scopes:       []string{"openid", "profile", "email"},
+		Endpoint: oauth2.Endpoint{
+			AuthURL:  authURL,
+			TokenURL: tokenURL,
+		},
+	}
 }
 
 func GenerateOAuthToken(username string) (*oauth2.Token, error) {
