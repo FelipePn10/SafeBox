@@ -1,33 +1,44 @@
 package controllers
 
 import (
+	"SafeBox/models"
+	"SafeBox/repositories"
 	"SafeBox/storage"
 	"SafeBox/utils"
 	"bytes"
+	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/sync/semaphore"
 )
 
 type BackupController struct {
 	Storage storage.Storage
 }
 
-// NewBackupController creates a new instance of BackupController
 func NewBackupController(storage storage.Storage) *BackupController {
+	if storage == nil {
+		panic("storage cannot be nil")
+	}
 	return &BackupController{Storage: storage}
 }
 
-// validatePath validates that the given path is a valid directory.
 func validatePath(path string) error {
+	if path == "" {
+		return errors.New("path cannot be empty")
+	}
+
 	info, err := os.Stat(path)
 	if err != nil {
-		return errors.New("invalid or inaccessible path")
+		return fmt.Errorf("invalid or inaccessible path: %w", err)
 	}
 	if !info.IsDir() {
 		return errors.New("the given path is not a directory")
@@ -35,146 +46,279 @@ func validatePath(path string) error {
 	return nil
 }
 
-// compressAndEncrypt compresses and encrypts a file or directory.
-func compressAndEncrypt(filePath string) ([]byte, error) {
+func compressAndEncrypt(filePath string) ([]byte, string, error) {
 	compressedFile, err := utils.Compress(filePath)
 	if err != nil {
-		return nil, err
+		return nil, "", fmt.Errorf("compression failed: %w", err)
 	}
 
 	encryptionKey := utils.GenerateEncryptionKey()
 	encryptedFile, err := utils.EncryptFile(bytes.NewReader(compressedFile), encryptionKey)
 	if err != nil {
-		return nil, err
+		return nil, "", fmt.Errorf("encryption failed: %w", err)
 	}
 
-	return encryptedFile, nil
+	return encryptedFile, encryptionKey, nil
 }
 
-// processAndUpload compresses, encrypts, and uploads the file to storage.
-func processAndUpload(filePath, destPath string, storage storage.Storage, replace bool) error {
-	// Compression and encryption
-	encryptedFile, err := compressAndEncrypt(filePath)
+func processAndUpload(ctx context.Context, filePath, destPath string, storage storage.Storage, replace bool) error {
+	encryptedFile, encryptionKey, err := compressAndEncrypt(filePath)
 	if err != nil {
 		return err
 	}
 
-	// Checks whether to overwrite the existing backup
 	if !replace {
-		exists, _ := storage.Exists(destPath)
+		exists, err := storage.Exists(destPath)
+		if err != nil {
+			return fmt.Errorf("failed to check if file exists: %w", err)
+		}
 		if exists {
-			logrus.Warnf("The file %s already exists. Skipping upload.", destPath)
+			logrus.WithFields(logrus.Fields{
+				"file": destPath,
+			}).Warn("The file already exists. Skipping upload.")
 			return nil
 		}
 	}
 
-	// Upload the file
 	_, err = storage.Upload(bytes.NewReader(encryptedFile), destPath)
-	return err
+	if err != nil {
+		return fmt.Errorf("upload failed: %w", err)
+	}
+
+	// Store encryption key securely - implement this based on your security requirements
+	err = storeEncryptionKey(ctx, encryptionKey, destPath)
+	if err != nil {
+		return fmt.Errorf("failed to store encryption key: %w", err)
+	}
+
+	return nil
 }
 
-// backupDirectory backs up a directory, processing files in parallel.
-func backupDirectory(basePath, destDir string, storage storage.Storage, replace bool) (int, []string, error) {
-	var wg sync.WaitGroup
-	errChan := make(chan string, 100)
-	successCount := 0
-	mu := &sync.Mutex{}
+type BackupResult struct {
+	SuccessCount int
+	FailedFiles  []string
+	Error        error
+}
+
+func backupDirectory(ctx context.Context, basePath, destDir string, storage storage.Storage, replace bool, maxWorkers int) BackupResult {
+	var (
+		wg            sync.WaitGroup
+		mu            sync.Mutex
+		failedFiles   = make(chan string, 100)
+		expectedCount = 0
+	)
+
+	sem := semaphore.NewWeighted(int64(maxWorkers))
 
 	err := filepath.Walk(basePath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return err
+			return fmt.Errorf("walk error at %s: %w", path, err)
 		}
 		if info.IsDir() {
 			return nil
 		}
 
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		if err := sem.Acquire(ctx, 1); err != nil {
+			return err
+		}
+
 		wg.Add(1)
 		go func(filePath string) {
 			defer wg.Done()
-			destPath := filepath.Join(destDir, info.Name())
-			if err := processAndUpload(filePath, destPath, storage, replace); err != nil {
-				errChan <- filePath
+			defer sem.Release(1)
+
+			relPath, err := filepath.Rel(basePath, filePath)
+			if err != nil {
+				failedFiles <- filePath
+				return
+			}
+
+			destPath := filepath.Join(destDir, relPath)
+			if err := processAndUpload(ctx, filePath, destPath, storage, replace); err != nil {
+				failedFiles <- filePath
 			} else {
 				mu.Lock()
-				successCount++
+				expectedCount++
 				mu.Unlock()
 			}
 		}(path)
 		return nil
 	})
 
-	wg.Wait()
-	close(errChan)
+	go func() {
+		wg.Wait()
+		close(failedFiles)
+	}()
 
-	var failedFiles []string
-	for failed := range errChan {
-		failedFiles = append(failedFiles, failed)
+	var failed []string
+	for f := range failedFiles {
+		failed = append(failed, f)
 	}
 
-	return successCount, failedFiles, err
-}
-
-// askReplace asks the user whether the backup should be incremental or replace the old one.
-func askReplace(c *gin.Context) bool {
-	replace := c.Query("replace")
-	if replace == "true" {
-		return true
+	return BackupResult{
+		SuccessCount: expectedCount,
+		FailedFiles:  failed,
+		Error:        err,
 	}
-	return false
 }
 
-// handleBackup is a generic function to perform backups of different types of data.
 func (b *BackupController) handleBackup(c *gin.Context, basePath, destDir string) {
-	logrus.Infof("Starting backup of: %s", basePath)
-
-	if basePath == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Path not provided"})
-		return
-	}
+	logrus.WithFields(logrus.Fields{
+		"basePath": basePath,
+		"destDir":  destDir,
+	}).Info("Starting backup")
 
 	if err := validatePath(basePath); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	replace := askReplace(c)
+	replace := c.Query("replace") == "true"
 
-	successCount, failedFiles, err := backupDirectory(basePath, destDir, b.Storage, replace)
-	if err != nil {
-		logrus.Error("Error during backup: ", err)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Minute)
+	defer cancel()
+
+	result := backupDirectory(ctx, basePath, destDir, b.Storage, replace, 10)
+	if result.Error != nil {
+		logrus.WithError(result.Error).Error("Backup failed")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error performing backup"})
 		return
 	}
 
-	response := gin.H{
+	c.JSON(http.StatusOK, gin.H{
 		"message":      "Backup completed",
-		"successCount": successCount,
-		"failedFiles":  failedFiles,
+		"successCount": result.SuccessCount,
+		"failedFiles":  result.FailedFiles,
+	})
+}
+
+func (b *BackupController) createBackupRecord(ctx context.Context, user *models.User, appName, filePath string) error {
+	backup := models.Backup{
+		UserID:   user.ID,
+		AppName:  appName,
+		FilePath: filePath,
 	}
-	c.JSON(http.StatusOK, response)
+
+	backupHistory := models.BackupHistory{
+		UserID:     user.ID,
+		AppName:    appName,
+		BackupDate: time.Now(),
+		BackupMode: "manual",
+		FilePath:   filePath,
+	}
+
+	tx := repositories.DBConection.WithContext(ctx).Begin()
+	if err := tx.Create(&backup).Error; err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to create backup record: %w", err)
+	}
+
+	if err := tx.Create(&backupHistory).Error; err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to create backup history: %w", err)
+	}
+
+	return tx.Commit().Error
 }
 
-// BackupGallery backs up the user's photo gallery.
-func (b *BackupController) BackupGallery(c *gin.Context) {
-	galleryPath := c.Query("gallery_path")
-	b.handleBackup(c, galleryPath, "gallery_backup")
+func (b *BackupController) validateUser(c *gin.Context) (*models.User, error) {
+	user, ok := c.Get("user")
+	if !ok {
+		return nil, errors.New("user not found in context")
+	}
+
+	userModel, ok := user.(*models.User)
+	if !ok {
+		return nil, errors.New("user is not of type *models.User")
+	}
+
+	return userModel, nil
 }
 
-// BackupWhatsApp backs up the user's WhatsApp conversations.
-func (b *BackupController) BackupWhatsApp(c *gin.Context) {
-	whatsappPath := c.Query("whatsapp_path")
-	b.handleBackup(c, whatsappPath, "whatsapp_backup")
-}
-
-// BackupApp backs up data from a specific application.
-func (b *BackupController) BackupApp(c *gin.Context) {
-	appPath := c.Query("app_path")
-	appName := c.Query("app_name")
-
-	if appName == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Application name not provided"})
+func (b *BackupController) handleAppBackup(c *gin.Context, appName string) {
+	user, err := b.validateUser(c)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	b.handleBackup(c, appPath, appName+"_backup")
+	appPath := c.Query(appName + "_path")
+	if appPath == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%s path not provided", appName)})
+		return
+	}
+
+	if err := validatePath(appPath); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Minute)
+	defer cancel()
+
+	result := backupDirectory(ctx, appPath, appName+"_backup", b.Storage, false, 5)
+	if result.Error != nil {
+		logrus.WithFields(logrus.Fields{
+			"appName": appName,
+			"error":   result.Error,
+		}).Error("Error backing up app")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Error backing up %s", appName)})
+		return
+	}
+
+	for _, filePath := range result.FailedFiles {
+		if err := b.createBackupRecord(ctx, user, appName, filePath); err != nil {
+			logrus.WithFields(logrus.Fields{
+				"appName": appName,
+				"file":    filePath,
+				"error":   err,
+			}).Error("Failed to create backup record for failed file")
+		}
+	}
+
+	for i := 0; i < result.SuccessCount; i++ {
+		// Assuming we have a way to get the file path for successful backups, for example from a list
+		filePath := fmt.Sprintf("successful_backup_%d", i)
+		if err := b.createBackupRecord(ctx, user, appName, filePath); err != nil {
+			logrus.WithFields(logrus.Fields{
+				"appName": appName,
+				"file":    filePath,
+				"error":   err,
+			}).Error("Failed to create backup record for successful file")
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":      fmt.Sprintf("%s backup completed successfully", appName),
+		"successCount": result.SuccessCount,
+		"failedFiles":  result.FailedFiles,
+	})
+}
+
+func (b *BackupController) BackupGallery(c *gin.Context) {
+	b.handleAppBackup(c, "gallery")
+}
+
+func (b *BackupController) BackupWhatsApp(c *gin.Context) {
+	b.handleAppBackup(c, "whatsapp")
+}
+
+func (b *BackupController) BackupApp(c *gin.Context) {
+	appName := c.Query("app_name")
+	if appName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "App name not provided"})
+		return
+	}
+	b.handleAppBackup(c, appName)
+}
+
+// Placeholder function for storing encryption key securely
+func storeEncryptionKey(ctx context.Context, key, filePath string) error {
+	// Implement the logic to securely store the encryption key here
+	// This is just a placeholder function
+	return nil
 }

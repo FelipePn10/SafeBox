@@ -19,7 +19,7 @@ func setupStorage() (storage.Storage, error) {
 		return nil, fmt.Errorf("variável de ambiente R2_BUCKET_NAME não configurada")
 	}
 
-	s3Storage, err := storage.NewS3Storage(bucketName)
+	s3Storage, err := storage.NewR2Storage(bucketName)
 	if err != nil {
 		return nil, fmt.Errorf("falha ao configurar armazenamento S3: %w", err)
 	}
@@ -37,10 +37,8 @@ func SetupRouter() *gin.Engine {
 		log.Fatalf("Erro crítico: %v", err)
 	}
 
-	// Instanciar controlador de backup
 	backupController := controllers.NewBackupController(s3Storage)
 
-	// Middleware de autorização
 	backup := r.Group("/backup", middlewares.Authorize(models.PermissionBackup))
 	{
 		backup.POST("/gallery", backupController.BackupGallery)

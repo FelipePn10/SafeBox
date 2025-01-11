@@ -161,7 +161,7 @@ func (a *AuthController) RefreshToken(c *gin.Context) {
 		return
 	}
 
-	// Renova o Access Token usando o Refresh Token
+	// Renove the token
 	token, err := utils.RefreshOAuthToken(body.RefreshToken)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to refresh token"})

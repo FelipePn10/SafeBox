@@ -13,38 +13,54 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-type S3Storage struct {
+type R2Storage struct {
 	Client *s3.Client
 	Bucket string
 }
 
-func NewS3Storage(bucket string) (*S3Storage, error) {
-	cfg, err := config.LoadDefaultConfig(context.TODO(),
+// NewR2Storage creates a new R2Storage instance
+func NewR2Storage(bucket string) (*R2Storage, error) {
+	// Configuration for Cloudflare R2
+	configLoadOptions := []func(*config.LoadOptions) error{
 		config.WithRegion("auto"),
-		config.WithEndpointResolver(aws.EndpointResolverFunc(func(service, region string) (aws.Endpoint, error) {
-			return aws.Endpoint{
-				URL:           "https://" + os.Getenv("R2_ACCOUNT_ID") + ".r2.cloudflarestorage.com",
-				SigningRegion: "auto",
-			}, nil
-		})),
-		config.WithCredentialsProvider(aws.CredentialsProviderFunc(func(ctx context.Context) (aws.Credentials, error) {
-			return aws.Credentials{
-				AccessKeyID:     os.Getenv("R2_ACCESS_KEY_ID"),
-				SecretAccessKey: os.Getenv("R2_SECRET_ACCESS_KEY"),
-			}, nil
-		})),
-	)
+	}
+	// Configure the resolver endpoint for Cloudflare R2
+	endpointResolver := aws.EndpointResolverFunc(func(service, region string) (aws.Endpoint, error) {
+		return aws.Endpoint{
+			URL:           "https://" + os.Getenv("R2_ACCOUNT_ID") + ".r2.cloudflarestorage.com",
+			SigningRegion: "auto",
+		}, nil
+	})
+
+	// Load the configuration with the defined options
+	ctx := context.TODO()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	opts := append(configLoadOptions, config.WithEndpointResolver(endpointResolver))
+
+	// Configure credentials for R2
+	creds := aws.CredentialsProviderFunc(func(ctx context.Context) (aws.Credentials, error) {
+		return aws.Credentials{
+			AccessKeyID:     os.Getenv("R2_ACCESS_KEY_ID"),
+			SecretAccessKey: os.Getenv("R2_SECRET_ACCESS_KEY"),
+		}, nil
+	})
+	opts = append(opts, config.WithCredentialsProvider(creds))
+
+	cfg, err := config.LoadDefaultConfig(ctx, opts...)
 	if err != nil {
-		logrus.Errorf("Failed to load AWS configuration: %v", err)
+		logrus.Errorf("Failed to load Cloudflare R2 configuration: %v", err)
 		return nil, err
 	}
 
 	client := s3.NewFromConfig(cfg)
-	logrus.Info("Successfully configured S3 storage")
-	return &S3Storage{Client: client, Bucket: bucket}, nil
+	logrus.Info("Successfully configured R2 storage")
+	return &R2Storage{Client: client, Bucket: bucket}, nil
 }
 
-func (s *S3Storage) Download(filename string) (*os.File, error) {
+// Download downloads a file from R2 storage
+func (s *R2Storage) Download(filename string) (*os.File, error) {
 	logrus.WithFields(logrus.Fields{
 		"filename": filename,
 		"bucket":   s.Bucket,
@@ -63,6 +79,7 @@ func (s *S3Storage) Download(filename string) (*os.File, error) {
 			tmpFile.Close()
 		}
 	}()
+
 	downloadResult, err := s.Client.GetObject(context.TODO(), &s3.GetObjectInput{
 		Bucket: aws.String(s.Bucket),
 		Key:    aws.String(filename),
@@ -90,7 +107,8 @@ func (s *S3Storage) Download(filename string) (*os.File, error) {
 	return tmpFile, nil
 }
 
-func (s *S3Storage) Upload(file io.Reader, filename string) (string, error) {
+// Upload uploads a file to R2 storage
+func (s *R2Storage) Upload(file io.Reader, filename string) (string, error) {
 	logrus.WithFields(logrus.Fields{
 		"filename": filename,
 		"bucket":   s.Bucket,
@@ -116,7 +134,8 @@ func (s *S3Storage) Upload(file io.Reader, filename string) (string, error) {
 	return filename, nil
 }
 
-func (s *S3Storage) Delete(filename string) error {
+// Delete removes a file from R2 storage
+func (s *R2Storage) Delete(filename string) error {
 	logrus.WithFields(logrus.Fields{
 		"filename": filename,
 		"bucket":   s.Bucket,
@@ -141,8 +160,8 @@ func (s *S3Storage) Delete(filename string) error {
 	return nil
 }
 
-// Exists checks if a file exists in the S3 storage
-func (s *S3Storage) Exists(filePath string) (bool, error) {
+// Exists checks if a file exists in R2 storage
+func (s *R2Storage) Exists(filePath string) (bool, error) {
 	_, err := s.Client.HeadObject(context.TODO(), &s3.HeadObjectInput{
 		Bucket: aws.String(s.Bucket),
 		Key:    aws.String(filePath),

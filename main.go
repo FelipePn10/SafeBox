@@ -64,7 +64,7 @@ func main() {
 	var fileStorage storage.Storage
 	switch os.Getenv("STORAGE_TYPE") {
 	case "r2":
-		r2Storage, err := storage.NewS3Storage(os.Getenv("R2_BUCKET_NAME"))
+		r2Storage, err := storage.NewR2Storage(os.Getenv("R2_BUCKET_NAME"))
 		if err != nil {
 			logrus.Fatal("Erro ao configurar Cloudflare R2: ", err)
 		}
