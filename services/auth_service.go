@@ -20,7 +20,7 @@ func NewAuthService(userRepo *repositories.UserRepository) *AuthService {
 func (s *AuthService) Register(user *models.User) error {
 	// Set storage plan and limit for new users
 	user.Plan = "free"
-	user.StorageLimit = 1024 * 1024 * 1024 * 1024 // 1024 GB
+	user.StorageLimit = 15 * 1024 * 1024 * 1024 // 15 GB
 
 	if err := s.userRepo.Create(user); err != nil {
 		logrus.Error("Error registering user: ", err)

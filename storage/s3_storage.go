@@ -2,12 +2,14 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/sirupsen/logrus"
 )
 
@@ -137,4 +139,20 @@ func (s *S3Storage) Delete(filename string) error {
 	}).Info("Deleted file successfully")
 
 	return nil
+}
+
+// Exists checks if a file exists in the S3 storage
+func (s *S3Storage) Exists(filePath string) (bool, error) {
+	_, err := s.Client.HeadObject(context.TODO(), &s3.HeadObjectInput{
+		Bucket: aws.String(s.Bucket),
+		Key:    aws.String(filePath),
+	})
+	var notFound *types.NoSuchKey
+	if errors.As(err, &notFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }

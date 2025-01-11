@@ -42,3 +42,17 @@ func (s *LocalStorage) Delete(filename string) error {
 	path := filepath.Join(s.BasePath, filename)
 	return os.Remove(path)
 }
+
+func (ls *LocalStorage) Exists(filePath string) (bool, error) {
+
+	_, err := os.Stat(filePath)
+
+	if os.IsNotExist(err) {
+
+		return false, nil
+
+	}
+
+	return err == nil, err
+
+}

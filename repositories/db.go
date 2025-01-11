@@ -17,5 +17,14 @@ func InitDB() {
 		logrus.Fatal("Error connecting to database ", err)
 	}
 	DBConection = db
+
+	// Automatic migration to User
 	db.AutoMigrate(&models.User{})
+
+	// Automatic migration to OAuthUser
+	db.AutoMigrate(&models.OAuthUser{})
+
+	db.AutoMigrate(&models.PermissionModel{})
+
+	logrus.Info("Database migration completed successfully")
 }

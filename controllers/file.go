@@ -180,8 +180,8 @@ func (f *FileController) Update(c *gin.Context) {
 		return
 	}
 
-	if header.Size > 5*1024*1024 {
-		c.JSON(413, gin.H{"error": "File size exceeds the limit of 5MB"})
+	if header.Size > 15*1024*1024*1024 {
+		c.JSON(413, gin.H{"error": "File size exceeds the limit of 10GB"})
 		return
 	}
 
