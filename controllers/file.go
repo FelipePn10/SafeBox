@@ -66,15 +66,23 @@ func (f *FileController) Upload(c *gin.Context) {
 	}
 
 	// Criptografar arquivo
-	encryptionKey := utils.GenerateEncryptionKey()
-	encryptedFile, err := utils.EncryptFile(file, encryptionKey)
+	encryptionKey, err := utils.GenerateEncryptionKey()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error generating encryption key"})
+		return
+	}
+	var encryptedFile bytes.Buffer
+	if err := utils.EncryptStream(file, &encryptedFile, encryptionKey); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error encrypting the file"})
+		return
+	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error encrypting the file"})
 		return
 	}
 
 	// Salvar arquivo criptografado
-	path, err := f.Storage.Upload(bytes.NewReader(encryptedFile), header.Filename)
+	path, err := f.Storage.Upload(bytes.NewReader(encryptedFile.Bytes()), header.Filename)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error saving the file"})
 		return
@@ -123,14 +131,19 @@ func (f *FileController) Download(c *gin.Context) {
 	}
 
 	// Descriptografar arquivo
-	encryptionKey := utils.GenerateEncryptionKey() // Recuperar a chave de criptografia correta
-	decryptedFile, err := utils.DecryptFile(fileContent, encryptionKey)
+	encryptionKey, err := utils.GenerateEncryptionKey() // Recuperar a chave de criptografia correta
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error generating encryption key"})
+		return
+	}
+	var decryptedFile bytes.Buffer
+	err = utils.DecryptStream(bytes.NewReader(fileContent), &decryptedFile, encryptionKey)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error decrypting the file"})
 		return
 	}
 
-	c.Data(http.StatusOK, "application/octet-stream", decryptedFile)
+	c.Data(http.StatusOK, "application/octet-stream", decryptedFile.Bytes())
 }
 
 func (f *FileController) Delete(c *gin.Context) {

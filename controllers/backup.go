@@ -24,6 +24,12 @@ type BackupController struct {
 	Storage storage.Storage
 }
 
+type BackupResult struct {
+	SuccessCount int
+	FailedFiles  []string
+	Error        error
+}
+
 func NewBackupController(storage storage.Storage) *BackupController {
 	if storage == nil {
 		panic("storage cannot be nil")
@@ -52,13 +58,18 @@ func compressAndEncrypt(filePath string) ([]byte, string, error) {
 		return nil, "", fmt.Errorf("compression failed: %w", err)
 	}
 
-	encryptionKey := utils.GenerateEncryptionKey()
-	encryptedFile, err := utils.EncryptFile(bytes.NewReader(compressedFile), encryptionKey)
+	encryptionKey, err := utils.GenerateEncryptionKey()
+	if err != nil {
+		return nil, "", fmt.Errorf("encryption key generation failed: %w", err)
+	}
+	var encryptedBuffer bytes.Buffer
+	err = utils.EncryptStream(bytes.NewReader(compressedFile), &encryptedBuffer, encryptionKey)
 	if err != nil {
 		return nil, "", fmt.Errorf("encryption failed: %w", err)
 	}
+	encryptedFile := encryptedBuffer.Bytes()
 
-	return encryptedFile, encryptionKey, nil
+	return encryptedFile, string(encryptionKey), nil
 }
 
 func processAndUpload(ctx context.Context, filePath, destPath string, storage storage.Storage, replace bool) error {
@@ -92,12 +103,6 @@ func processAndUpload(ctx context.Context, filePath, destPath string, storage st
 	}
 
 	return nil
-}
-
-type BackupResult struct {
-	SuccessCount int
-	FailedFiles  []string
-	Error        error
 }
 
 func backupDirectory(ctx context.Context, basePath, destDir string, storage storage.Storage, replace bool, maxWorkers int) BackupResult {

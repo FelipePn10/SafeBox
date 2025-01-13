@@ -5,67 +5,116 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"io"
-	"io/ioutil"
 )
 
-// EncryptFile encrypts the contents of a file
-func EncryptFile(file io.Reader, key string) ([]byte, error) {
-	plaintext, err := ioutil.ReadAll(file)
-	if err != nil {
-		return nil, err
+// EncryptStream encrypts the contents of a stream in chunks
+func EncryptStream(input io.Reader, output io.Writer, key []byte) error {
+	if len(key) != 16 && len(key) != 24 && len(key) != 32 {
+		return errors.New("invalid key size: must be 16, 24, or 32 bytes")
 	}
 
-	block, err := aes.NewCipher([]byte(key))
+	block, err := aes.NewCipher(key)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	nonce := make([]byte, gcm.NonceSize())
-	if _, err = io.ReadFull(rand.Reader, nonce); err != nil {
-		return nil, err
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return err
 	}
 
-	ciphertext := gcm.Seal(nonce, nonce, plaintext, nil)
-	return ciphertext, nil
+	// Write nonce to the output
+	if _, err := output.Write(nonce); err != nil {
+		return err
+	}
+
+	buffer := make([]byte, 4096) // Process file in 4KB chunks
+	for {
+		n, err := input.Read(buffer)
+		if n > 0 {
+			chunk := gcm.Seal(nil, nonce, buffer[:n], nil)
+			if _, err := output.Write(chunk); err != nil {
+				return err
+			}
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-// DecryptFile decrypts the contents of a file
-func DecryptFile(ciphertext []byte, key string) ([]byte, error) {
-	block, err := aes.NewCipher([]byte(key))
+// DecryptStream decrypts the contents of a stream in chunks
+func DecryptStream(input io.Reader, output io.Writer, key []byte) error {
+	if len(key) != 16 && len(key) != 24 && len(key) != 32 {
+		return errors.New("invalid key size: must be 16, 24, or 32 bytes")
+	}
+
+	block, err := aes.NewCipher(key)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	nonceSize := gcm.NonceSize()
-	if len(ciphertext) < nonceSize {
-		return nil, err
+	nonce := make([]byte, nonceSize)
+
+	// Read nonce from the input
+	if _, err := io.ReadFull(input, nonce); err != nil {
+		return err
 	}
 
-	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
-	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
-	if err != nil {
-		return nil, err
+	buffer := make([]byte, 4096+gcm.Overhead()) // Account for GCM overhead
+	for {
+		n, err := input.Read(buffer)
+		if n > 0 {
+			chunk, err := gcm.Open(nil, nonce, buffer[:n], nil)
+			if err != nil {
+				return err
+			}
+			if _, err := output.Write(chunk); err != nil {
+				return err
+			}
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
 	}
-
-	return plaintext, nil
+	return nil
 }
 
-// GenerateEncryptionKey generates an encryption key
-func GenerateEncryptionKey() string {
-	key := make([]byte, 32)
+// GenerateEncryptionKey generates a 256-bit encryption key and returns it as a byte slice
+func GenerateEncryptionKey() ([]byte, error) {
+	key := make([]byte, 32) // 256 bits for AES-256
 	if _, err := rand.Read(key); err != nil {
-		panic(err)
+		return nil, errors.New("failed to generate encryption key")
 	}
+	return key, nil
+}
+
+// KeyToHex converts a key to a hexadecimal string
+func KeyToHex(key []byte) string {
 	return hex.EncodeToString(key)
+}
+
+// KeyFromHex converts a hexadecimal string back to a key
+func KeyFromHex(hexKey string) ([]byte, error) {
+	return hex.DecodeString(hexKey)
 }
