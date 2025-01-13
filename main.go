@@ -7,25 +7,16 @@ import (
 	"SafeBox/repositories"
 	"SafeBox/routes"
 	"SafeBox/services"
-	"SafeBox/storage"
-	"os"
 
 	"github.com/joho/godotenv"
 	"github.com/labstack/echo/v4"
 	"github.com/sirupsen/logrus"
-
-	"github.com/prometheus/client_golang/prometheus"
 )
 
 func init() {
+	// Configure logging
 	logrus.SetFormatter(&logrus.JSONFormatter{})
 	logrus.SetLevel(logrus.InfoLevel)
-
-	promRegister()
-}
-
-func promRegister() {
-	prometheus.MustRegister(routes.UploadsCounter, routes.DownloadsCounter, routes.DeletesCounter)
 }
 
 func main() {
@@ -48,32 +39,32 @@ func main() {
 
 	// Initialize services
 	authService := services.NewAuthService(userRepo)
-	_ = authService
 
-	// Initialize file storage using R2
-	var fileStorage storage.Storage
-	r2Storage, err := storage.NewR2Storage(os.Getenv("R2_BUCKET_NAME"))
-	if err != nil {
-		logrus.Fatal("Error configuring Cloudflare R2: ", err)
-	}
-	fileStorage = r2Storage
-
-	fileController := controllers.NewFileController(fileStorage)
-	_ = fileController
+	// Initialize controllers
+	fileController := controllers.NewFileController(nil) // Storage will be initialized by RouteConfig
 
 	// Set up Echo router
 	e := echo.New()
 
 	// Apply global middlewares
 	e.Use(middlewares.RecoveryMiddleware())
-	e.Use(middlewares.ValidateTokenMiddleware())
 	e.Use(middlewares.ErrorHandler())
 
+	// Create route configuration
+	routeConfig, err := routes.NewRouteConfig(e, authService, fileController)
+	if err != nil {
+		logrus.Fatalf("Failed to create route config: %v", err)
+	}
+
 	// Register all routes
-	routes.RegisterRoutes(e)
+	routeConfig.RegisterAllRoutes()
+
+	// Configure custom error handler
+	//e.HTTPErrorHandler = middlewares.CustomErrorHandler
 
 	// Start server
-	if err := e.Start(":8080"); err != nil {
+	serverAddr := (":8080")
+	if err := e.Start(serverAddr); err != nil {
 		logrus.Fatal("Error starting server: ", err)
 	}
 }

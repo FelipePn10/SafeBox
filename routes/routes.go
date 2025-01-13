@@ -6,8 +6,6 @@ import (
 	"SafeBox/services"
 	"SafeBox/storage"
 	"fmt"
-	"log"
-	"net/http"
 	"os"
 
 	"github.com/labstack/echo/v4"
@@ -15,21 +13,52 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
+// Metrics definitions
 var (
-	UploadsCounter = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "safebox_uploads_total",
-		Help: "Total de uploads realizados",
-	})
-	DownloadsCounter = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "safebox_downloads_total",
-		Help: "Total de downloads realizados",
-	})
-	DeletesCounter = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "safebox_deletes_total",
-		Help: "Total de exclusões realizadas",
-	})
+	metrics = struct {
+		uploads   prometheus.Counter
+		downloads prometheus.Counter
+		deletes   prometheus.Counter
+	}{
+		uploads: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "safebox_uploads_total",
+			Help: "Total de uploads realizados",
+		}),
+		downloads: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "safebox_downloads_total",
+			Help: "Total de downloads realizados",
+		}),
+		deletes: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "safebox_deletes_total",
+			Help: "Total de exclusões realizadas",
+		}),
+	}
 )
 
+// RouteConfig holds all dependencies needed for route configuration
+type RouteConfig struct {
+	Echo           *echo.Echo
+	AuthService    *services.AuthService
+	FileController *controllers.FileController
+	Storage        storage.Storage
+}
+
+// NewRouteConfig creates a new RouteConfig with all necessary dependencies
+func NewRouteConfig(e *echo.Echo, authService *services.AuthService, fileController *controllers.FileController) (*RouteConfig, error) {
+	storage, err := setupStorage()
+	if err != nil {
+		return nil, fmt.Errorf("failed to setup storage: %w", err)
+	}
+
+	return &RouteConfig{
+		Echo:           e,
+		AuthService:    authService,
+		FileController: fileController,
+		Storage:        storage,
+	}, nil
+}
+
+// setupStorage initializes the storage backend
 func setupStorage() (storage.Storage, error) {
 	bucketName := os.Getenv("R2_BUCKET_NAME")
 	if bucketName == "" {
@@ -44,61 +73,63 @@ func setupStorage() (storage.Storage, error) {
 	return s3Storage, nil
 }
 
-// RegisterRoutes configures all routes for the application
-func RegisterAllRoutes(e *echo.Echo, authService *services.AuthService, fileController *controllers.FileController) {
-	// Register API routes
-	RegisterAPIRoutes(e)
-
-	// Register Backup routes
-	RegisterBackupRoutes(e)
+// RegisterAllRoutes configures all routes for the application
+func (rc *RouteConfig) RegisterAllRoutes() {
+	// Register prometheus metrics
+	prometheus.MustRegister(metrics.uploads, metrics.downloads, metrics.deletes)
 
 	// Public routes
-	authController := controllers.NewAuthController(authService)
-	e.POST("/register", authController.Register)
-	e.POST("/login", authController.Login)
+	rc.registerAuthRoutes()
 
 	// Protected routes
-	authGroup := e.Group("/")
-	authGroup.Use(middlewares.CheckUserPlanMiddleware())
-	{
-		authGroup.POST("/upload", func(c echo.Context) error {
-			UploadsCounter.Inc()
-			return fileController.Upload(c)
-		})
-		authGroup.GET("/download/:id", func(c echo.Context) error {
-			DownloadsCounter.Inc()
-			return fileController.Download(c)
-		})
-		authGroup.DELETE("/files/:id", func(c echo.Context) error {
-			DeletesCounter.Inc()
-			return fileController.Delete(c)
-		})
-	}
-	e.GET("/metrics", echo.WrapHandler(promhttp.Handler()))
+	rc.registerFileRoutes()
+	rc.registerBackupRoutes()
+	rc.registerMetricsRoute()
 }
 
-func RegisterAPIRoutes(e *echo.Echo) {
-	e.POST("/login", controllers.LoginController)
+// registerAuthRoutes configures authentication-related routes
+func (rc *RouteConfig) registerAuthRoutes() {
+	authController := controllers.NewAuthController(rc.AuthService)
 
-	protected := e.Group("/api")
-	protected.Use(middlewares.AuthMiddleware())
+	rc.Echo.POST("/register", authController.Register)
+	rc.Echo.POST("/login", authController.Login)
+}
 
-	protected.GET("/protected-resource", func(c echo.Context) error {
-		return c.JSON(http.StatusOK, echo.Map{"message": "Access granted"})
+// registerFileRoutes configures file management routes
+func (rc *RouteConfig) registerFileRoutes() {
+	files := rc.Echo.Group("/files")
+	files.Use(middlewares.RequireAuth())
+	files.Use(middlewares.CheckUserPlanMiddleware())
+
+	files.POST("/upload", func(c echo.Context) error {
+		metrics.uploads.Inc()
+		return rc.FileController.Upload(c)
+	})
+
+	files.GET("/download/:id", func(c echo.Context) error {
+		metrics.downloads.Inc()
+		return rc.FileController.Download(c)
+	})
+
+	files.DELETE("/:id", func(c echo.Context) error {
+		metrics.deletes.Inc()
+		return rc.FileController.Delete(c)
 	})
 }
 
-// RegisterBackupRoutes configures backup related routes
-func RegisterBackupRoutes(e *echo.Echo) {
-	s3Storage, err := setupStorage()
-	if err != nil {
-		log.Fatalf("Critical error: %v", err)
-	}
+// registerBackupRoutes configures backup-related routes
+func (rc *RouteConfig) registerBackupRoutes() {
+	backupController := controllers.NewBackupController(rc.Storage)
 
-	backupController := controllers.NewBackupController(s3Storage)
+	backup := rc.Echo.Group("/backup")
+	backup.Use(middlewares.RequireAuth())
 
-	backup := e.Group("/backup", middlewares.AuthMiddleware())
 	backup.POST("/gallery", backupController.BackupGallery)
 	backup.POST("/whatsapp", backupController.BackupWhatsApp)
 	backup.POST("/app", backupController.BackupApp)
+}
+
+// registerMetricsRoute configures the Prometheus metrics endpoint
+func (rc *RouteConfig) registerMetricsRoute() {
+	rc.Echo.GET("/metrics", echo.WrapHandler(promhttp.Handler()))
 }
