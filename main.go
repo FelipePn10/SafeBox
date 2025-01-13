@@ -7,6 +7,7 @@ import (
 	"SafeBox/repositories"
 	"SafeBox/routes"
 	"SafeBox/services"
+	"fmt"
 
 	"github.com/joho/godotenv"
 	"github.com/labstack/echo/v4"
@@ -32,8 +33,14 @@ func main() {
 	}
 	logrus.Infof("Configurations successfully loaded: %+v", cfg)
 
+	repositories.InitDB(repositories.DBConfig{
+		DB_HOST:     cfg.DBHost,
+		DB_USER:     cfg.DBUser,
+		DB_PASSWORD: cfg.DBPassword,
+		DB_NAME:     cfg.DBName,
+		DB_PORT:     fmt.Sprintf("%d", cfg.DBPort),
+	})
 	// Initialize database connection
-	repositories.InitDB()
 	dbConn := repositories.DBConection
 	userRepo := repositories.NewUserRepository(dbConn)
 

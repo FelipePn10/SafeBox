@@ -13,50 +13,49 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+type R2Config struct {
+	AccountID       string
+	AccessKeyID     string
+	SecretAccessKey string
+	Bucket          string
+}
+
 type R2Storage struct {
 	Client *s3.Client
 	Bucket string
 }
 
-// NewR2Storage creates a new R2Storage instance
-func NewR2Storage(bucket string) (*R2Storage, error) {
-	// Configuration for Cloudflare R2
-	configLoadOptions := []func(*config.LoadOptions) error{
-		config.WithRegion("auto"),
-	}
-	// Configure the resolver endpoint for Cloudflare R2
+func NewR2Storage(cfg R2Config) (*R2Storage, error) {
 	endpointResolver := aws.EndpointResolverFunc(func(service, region string) (aws.Endpoint, error) {
 		return aws.Endpoint{
-			URL:           "https://" + os.Getenv("R2_ACCOUNT_ID") + ".r2.cloudflarestorage.com",
+			URL:           "https://" + cfg.AccountID + ".r2.cloudflarestorage.com",
 			SigningRegion: "auto",
 		}, nil
 	})
 
-	// Load the configuration with the defined options
-	ctx := context.TODO()
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	opts := append(configLoadOptions, config.WithEndpointResolver(endpointResolver))
-
-	// Configure credentials for R2
 	creds := aws.CredentialsProviderFunc(func(ctx context.Context) (aws.Credentials, error) {
 		return aws.Credentials{
-			AccessKeyID:     os.Getenv("R2_ACCESS_KEY_ID"),
-			SecretAccessKey: os.Getenv("R2_SECRET_ACCESS_KEY"),
+			AccessKeyID:     cfg.AccessKeyID,
+			SecretAccessKey: cfg.SecretAccessKey,
 		}, nil
 	})
-	opts = append(opts, config.WithCredentialsProvider(creds))
 
-	cfg, err := config.LoadDefaultConfig(ctx, opts...)
+	opts := []func(*config.LoadOptions) error{
+		config.WithRegion("auto"),
+		config.WithEndpointResolver(endpointResolver),
+		config.WithCredentialsProvider(creds),
+	}
+
+	ctx := context.TODO()
+	awsCfg, err := config.LoadDefaultConfig(ctx, opts...)
 	if err != nil {
 		logrus.Errorf("Failed to load Cloudflare R2 configuration: %v", err)
 		return nil, err
 	}
 
-	client := s3.NewFromConfig(cfg)
+	client := s3.NewFromConfig(awsCfg)
 	logrus.Info("Successfully configured R2 storage")
-	return &R2Storage{Client: client, Bucket: bucket}, nil
+	return &R2Storage{Client: client, Bucket: cfg.Bucket}, nil
 }
 
 // Download downloads a file from R2 storage

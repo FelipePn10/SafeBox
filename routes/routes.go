@@ -65,9 +65,24 @@ func setupStorage() (storage.Storage, error) {
 		return nil, fmt.Errorf("environment variable R2_BUCKET_NAME not set")
 	}
 
-	s3Storage, err := storage.NewR2Storage(bucketName)
+	accountID := os.Getenv("R2_ACCOUNT_ID")
+	accessKeyID := os.Getenv("R2_ACCESS_KEY_ID")
+	secretAccessKey := os.Getenv("R2_SECRET_ACCESS_KEY")
+
+	if accountID == "" || accessKeyID == "" || secretAccessKey == "" {
+		return nil, fmt.Errorf("one or more R2 configuration environment variables are not set")
+	}
+
+	r2Config := storage.R2Config{
+		Bucket:          bucketName,
+		AccountID:       accountID,
+		AccessKeyID:     accessKeyID,
+		SecretAccessKey: secretAccessKey,
+	}
+
+	s3Storage, err := storage.NewR2Storage(r2Config)
 	if err != nil {
-		return nil, fmt.Errorf("failed to configure S3 storage: %w", err)
+		return nil, fmt.Errorf("failed to configure R2 storage: %w", err)
 	}
 
 	return s3Storage, nil

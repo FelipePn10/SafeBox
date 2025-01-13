@@ -1,0 +1,23 @@
+services:
+  postgres:
+    image: postgres:14
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: admin
+      POSTGRES_DB: safeboxdb
+    ports:
+      - "5432:5432"
+
+  safebox:
+    build: .
+    depends_on:
+      - postgres
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: admin
+      DB_NAME: safeboxdb
+      JWT_SECRET: Qy4t1MHZpawHXmsbnQuO+T2omJFE1X52MgFYPOnebBs=
+    ports:
+      - "8080:8080"
