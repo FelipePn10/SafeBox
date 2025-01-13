@@ -5,38 +5,27 @@ import (
 	"SafeBox/controllers"
 	"SafeBox/middlewares"
 	"SafeBox/repositories"
+	"SafeBox/routes"
 	"SafeBox/services"
 	"SafeBox/storage"
 	"os"
 
-	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
+	"github.com/labstack/echo/v4"
 	"github.com/sirupsen/logrus"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
-)
-
-var (
-	uploadsCounter = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "safebox_uploads_total",
-		Help: "Total de uploads realizados",
-	})
-	downloadsCounter = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "safebox_downloads_total",
-		Help: "Total de downloads realizados",
-	})
-	deletesCounter = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "safebox_deletes_total",
-		Help: "Total de exclusões realizadas",
-	})
 )
 
 func init() {
 	logrus.SetFormatter(&logrus.JSONFormatter{})
 	logrus.SetLevel(logrus.InfoLevel)
 
-	prometheus.MustRegister(uploadsCounter, downloadsCounter, deletesCounter)
+	promRegister()
+}
+
+func promRegister() {
+	prometheus.MustRegister(routes.UploadsCounter, routes.DownloadsCounter, routes.DeletesCounter)
 }
 
 func main() {
@@ -59,48 +48,32 @@ func main() {
 
 	// Initialize services
 	authService := services.NewAuthService(userRepo)
+	_ = authService
 
-	// Initialize file storage
+	// Initialize file storage using R2
 	var fileStorage storage.Storage
-	switch os.Getenv("STORAGE_TYPE") {
-	case "r2":
-		r2Storage, err := storage.NewR2Storage(os.Getenv("R2_BUCKET_NAME"))
-		if err != nil {
-			logrus.Fatal("Erro ao configurar Cloudflare R2: ", err)
-		}
-		fileStorage = r2Storage
-	default:
-		fileStorage = storage.NewLocalStorage("./uploads")
+	r2Storage, err := storage.NewR2Storage(os.Getenv("R2_BUCKET_NAME"))
+	if err != nil {
+		logrus.Fatal("Error configuring Cloudflare R2: ", err)
 	}
+	fileStorage = r2Storage
 
 	fileController := controllers.NewFileController(fileStorage)
+	_ = fileController
 
-	// Set up Gin router
-	r := gin.Default()
+	// Set up Echo router
+	e := echo.New()
 
 	// Apply global middlewares
-	r.Use(middlewares.RecoveryMiddleware())
-	r.Use(middlewares.ValidateTokenMiddleware())
-	r.Use(middlewares.ErrorHandler())
+	e.Use(middlewares.RecoveryMiddleware())
+	e.Use(middlewares.ValidateTokenMiddleware())
+	e.Use(middlewares.ErrorHandler())
 
-	// Public routes
-	authController := controllers.NewAuthController(authService)
-	r.POST("/register", authController.Register)
-	r.POST("/login", authController.Login)
-
-	// Protected routes
-	authGroup := r.Group("/")
-	//authGroup.Use(middlewares.AuthMiddleware())
-	authGroup.Use(middlewares.CheckUserPlanMiddleware()) // Adicionar middleware para verificar o plano do usuário e limites de armazenamento
-	{
-		authGroup.POST("/upload", fileController.Upload)
-		authGroup.GET("/download/:id", fileController.Download)
-		authGroup.DELETE("/files/:id", fileController.Delete)
-	}
-	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
+	// Register all routes
+	routes.RegisterRoutes(e)
 
 	// Start server
-	if err := r.Run(":8080"); err != nil {
-		logrus.Fatalf("Failed to start server: %v", err)
+	if err := e.Start(":8080"); err != nil {
+		logrus.Fatal("Error starting server: ", err)
 	}
 }

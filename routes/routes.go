@@ -3,6 +3,7 @@ package routes
 import (
 	"SafeBox/controllers"
 	"SafeBox/middlewares"
+	"SafeBox/services"
 	"SafeBox/storage"
 	"fmt"
 	"log"
@@ -10,6 +11,23 @@ import (
 	"os"
 
 	"github.com/labstack/echo/v4"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+)
+
+var (
+	UploadsCounter = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "safebox_uploads_total",
+		Help: "Total de uploads realizados",
+	})
+	DownloadsCounter = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "safebox_downloads_total",
+		Help: "Total de downloads realizados",
+	})
+	DeletesCounter = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "safebox_deletes_total",
+		Help: "Total de exclusões realizadas",
+	})
 )
 
 func setupStorage() (storage.Storage, error) {
@@ -26,6 +44,39 @@ func setupStorage() (storage.Storage, error) {
 	return s3Storage, nil
 }
 
+// RegisterRoutes configures all routes for the application
+func RegisterAllRoutes(e *echo.Echo, authService *services.AuthService, fileController *controllers.FileController) {
+	// Register API routes
+	RegisterAPIRoutes(e)
+
+	// Register Backup routes
+	RegisterBackupRoutes(e)
+
+	// Public routes
+	authController := controllers.NewAuthController(authService)
+	e.POST("/register", authController.Register)
+	e.POST("/login", authController.Login)
+
+	// Protected routes
+	authGroup := e.Group("/")
+	authGroup.Use(middlewares.CheckUserPlanMiddleware())
+	{
+		authGroup.POST("/upload", func(c echo.Context) error {
+			UploadsCounter.Inc()
+			return fileController.Upload(c)
+		})
+		authGroup.GET("/download/:id", func(c echo.Context) error {
+			DownloadsCounter.Inc()
+			return fileController.Download(c)
+		})
+		authGroup.DELETE("/files/:id", func(c echo.Context) error {
+			DeletesCounter.Inc()
+			return fileController.Delete(c)
+		})
+	}
+	e.GET("/metrics", echo.WrapHandler(promhttp.Handler()))
+}
+
 func RegisterAPIRoutes(e *echo.Echo) {
 	e.POST("/login", controllers.LoginController)
 
@@ -37,7 +88,7 @@ func RegisterAPIRoutes(e *echo.Echo) {
 	})
 }
 
-// RegisterBackupRoutes configura rotas relacionadas a backups
+// RegisterBackupRoutes configures backup related routes
 func RegisterBackupRoutes(e *echo.Echo) {
 	s3Storage, err := setupStorage()
 	if err != nil {

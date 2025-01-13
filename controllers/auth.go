@@ -12,7 +12,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/gin-gonic/gin"
+	"github.com/labstack/echo/v4"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -27,34 +27,31 @@ func NewAuthController(authService *services.AuthService) *AuthController {
 }
 
 // Register handles user registration
-func (a *AuthController) Register(c *gin.Context) {
+func (a *AuthController) Register(c echo.Context) error {
 	var user models.User
-	if err := c.BindJSON(&user); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
-		return
+	if err := c.Bind(&user); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid request"})
 	}
 
 	db := repositories.DBConection
 	if err := services.NewAuthService(repositories.NewUserRepository(db)).Register(&user); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 	}
 
-	c.JSON(http.StatusCreated, gin.H{"message": "User created"})
+	return c.JSON(http.StatusCreated, map[string]interface{}{"message": "User created"})
 }
 
 // Login handles user login
-func (a *AuthController) Login(c *gin.Context) {
+func (a *AuthController) Login(c echo.Context) error {
 	var credentials struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
-	if err := c.BindJSON(&credentials); err != nil {
+	if err := c.Bind(&credentials); err != nil {
 		logrus.WithFields(logrus.Fields{
 			"error": err,
 		}).Error("Error binding JSON")
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
-		return
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid request"})
 	}
 
 	logrus.WithFields(logrus.Fields{
@@ -68,8 +65,7 @@ func (a *AuthController) Login(c *gin.Context) {
 			"username": credentials.Username,
 			"error":    result.Error,
 		}).Error("User not found")
-		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
-		return
+		return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "User not found"})
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(credentials.Password)); err != nil {
@@ -77,8 +73,7 @@ func (a *AuthController) Login(c *gin.Context) {
 			"username": credentials.Username,
 			"error":    err,
 		}).Error("Invalid password")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid password"})
-		return
+		return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Invalid password"})
 	}
 
 	token, err := utils.GenerateOAuthToken(user.Username)
@@ -87,15 +82,14 @@ func (a *AuthController) Login(c *gin.Context) {
 			"username": credentials.Username,
 			"error":    err,
 		}).Error("Error generating token")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error generating token"})
-		return
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Error generating token"})
 	}
 
 	logrus.WithFields(logrus.Fields{
 		"username": credentials.Username,
 	}).Info("User logged in")
 
-	c.JSON(http.StatusOK, gin.H{
+	return c.JSON(http.StatusOK, map[string]interface{}{
 		"access_token":  token.AccessToken,
 		"refresh_token": token.RefreshToken,
 		"expires_in":    15 * 60,
@@ -103,30 +97,27 @@ func (a *AuthController) Login(c *gin.Context) {
 }
 
 // Logout handles user logout
-func (a *AuthController) Logout(c *gin.Context) {
+func (a *AuthController) Logout(c echo.Context) error {
 	// Get header token
-	token := c.GetHeader("Authorization")
+	token := c.Request().Header.Get("Authorization")
 	if token == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Authorization token not provided"})
-		return
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Authorization token not provided"})
 	}
 
 	// Extract the Bearer token
 	parts := strings.Split(token, " ")
 	if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid Authorization header format"})
-		return
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid Authorization header format"})
 	}
 	accessToken := parts[1]
 
 	// Revoke the token
 	err := auth.RevokeToken(accessToken)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to revoke token: %v", err)})
-		return
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": fmt.Sprintf("Failed to revoke token: %v", err)})
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "User logged out successfully"})
+	return c.JSON(http.StatusOK, map[string]interface{}{"message": "User logged out successfully"})
 }
 
 // RevokeGoogleToken revokes the provided token using Google's API
@@ -152,23 +143,21 @@ func RevokeGoogleToken(token string) error {
 }
 
 // RefreshToken handles token refresh
-func (a *AuthController) RefreshToken(c *gin.Context) {
+func (a *AuthController) RefreshToken(c echo.Context) error {
 	var body struct {
 		RefreshToken string `json:"refresh_token"`
 	}
-	if err := c.BindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
-		return
+	if err := c.Bind(&body); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid request"})
 	}
 
-	// Renove the token
+	// Refresh the token
 	token, err := utils.RefreshOAuthToken(body.RefreshToken)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to refresh token"})
-		return
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Failed to refresh token"})
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	return c.JSON(http.StatusOK, map[string]interface{}{
 		"access_token":  token.AccessToken,
 		"refresh_token": token.RefreshToken,
 		"expires_in":    15 * 60,
@@ -176,33 +165,30 @@ func (a *AuthController) RefreshToken(c *gin.Context) {
 }
 
 // AuthMiddleware validates the OAuth token
-func AuthMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		tokenString := c.GetHeader("Authorization")
-		if tokenString == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-			c.Abort()
-			return
-		}
+func AuthMiddleware() echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			tokenString := c.Request().Header.Get("Authorization")
+			if tokenString == "" {
+				return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Unauthorized"})
+			}
 
-		// Extract the Bearer token
-		parts := strings.Split(tokenString, " ")
-		if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid Authorization header format"})
-			c.Abort()
-			return
-		}
-		accessToken := parts[1]
+			// Extract the Bearer token
+			parts := strings.Split(tokenString, " ")
+			if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
+				return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "Invalid Authorization header format"})
+			}
+			accessToken := parts[1]
 
-		// Validate the token
-		claims, err := utils.ValidateOAuthToken(accessToken)
-		if err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-			c.Abort()
-			return
-		}
+			// Validate the token
+			claims, err := utils.ValidateOAuthToken(accessToken)
+			if err != nil {
+				return c.JSON(http.StatusUnauthorized, map[string]interface{}{"error": "Unauthorized"})
+			}
 
-		c.Set("username", claims.Username)
-		c.Next()
+			// Set the username in the context for use by subsequent handlers
+			c.Set("username", claims.Username)
+			return next(c)
+		}
 	}
 }

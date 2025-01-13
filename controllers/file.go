@@ -6,13 +6,14 @@ import (
 	"SafeBox/storage"
 	"SafeBox/utils"
 	"bytes"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"os"
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/gin-gonic/gin"
+	"github.com/labstack/echo/v4"
 	"github.com/sirupsen/logrus"
 )
 
@@ -47,178 +48,170 @@ func NewFileController(storage storage.Storage) *FileController {
 }
 
 // Upload function to handle file upload
-func (f *FileController) Upload(c *gin.Context) {
+func (f *FileController) Upload(c echo.Context) error {
 	logrus.Info("Recebendo solicitação de upload de arquivo")
 	uploadCounter.Inc()
 
-	file, header, err := c.Request.FormFile("file")
+	file, err := c.FormFile("file")
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "File not found or invalid"})
-		return
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "File not found or invalid"})
 	}
-	defer file.Close()
+	src, err := file.Open()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Error opening file"})
+	}
+	defer src.Close()
 
 	// Verificar limite de armazenamento
-	user := c.MustGet("user").(*models.User)
-	if user.Plan == "free" && user.StorageUsed+header.Size > user.StorageLimit {
-		c.JSON(http.StatusForbidden, gin.H{"error": "Storage limit exceeded"})
-		return
+	user := c.Get("user").(*models.User)
+	if user.Plan == "free" && user.StorageUsed+file.Size > user.StorageLimit {
+		return c.JSON(http.StatusForbidden, map[string]interface{}{"error": "Storage limit exceeded"})
 	}
 
 	// Criptografar arquivo
 	encryptionKey, err := utils.GenerateEncryptionKey()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error generating encryption key"})
-		return
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Error generating encryption key"})
 	}
 	var encryptedFile bytes.Buffer
-	if err := utils.EncryptStream(file, &encryptedFile, encryptionKey); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error encrypting the file"})
-		return
-	}
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error encrypting the file"})
-		return
+	if err := utils.EncryptStream(src, &encryptedFile, encryptionKey); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Error encrypting the file"})
 	}
 
 	// Salvar arquivo criptografado
-	path, err := f.Storage.Upload(bytes.NewReader(encryptedFile.Bytes()), header.Filename)
+	path, err := f.Storage.Upload(bytes.NewReader(encryptedFile.Bytes()), file.Filename)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error saving the file"})
-		return
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Error saving the file"})
 	}
 
 	// Atualizar espaço de armazenamento usado
-	user.StorageUsed += header.Size
+	user.StorageUsed += file.Size
 	// Salvar usuário atualizado no banco de dados
 	if err := repositories.NewUserRepository(repositories.DBConection).Update(user); err != nil {
 		logrus.Error("Erro ao atualizar espaço de armazenamento usado: ", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error updating storage usage"})
-		return
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Error updating storage usage"})
 	}
 
 	// Enviar notificação por e-mail no primeiro upload
-	if user.StorageUsed == header.Size {
+	if user.StorageUsed == file.Size {
 		if err := utils.SendEmail(user.Email, "Primeiro Upload Realizado", "Parabéns! Você realizou seu primeiro upload."); err != nil {
 			logrus.Error("Erro ao enviar e-mail de notificação: ", err)
 		}
 	}
 
-	c.JSON(http.StatusCreated, gin.H{
+	return c.JSON(http.StatusCreated, map[string]interface{}{
 		"message": "File uploaded successfully",
 		"path":    path,
 	})
 }
 
 // Download function to handle file download
-func (f *FileController) Download(c *gin.Context) {
+func (f *FileController) Download(c echo.Context) error {
 	logrus.Info("Recebendo solicitação de download de arquivo")
 	downloadCounter.Inc()
 
 	filename := c.Param("id")
 	file, err := f.Storage.Download(filename)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
-		return
+		return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "File not found"})
 	}
 	defer file.Close()
 
 	// Ler o conteúdo do arquivo
 	fileContent, err := ioutil.ReadAll(file)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error reading the file"})
-		return
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Error reading the file"})
 	}
 
 	// Descriptografar arquivo
 	encryptionKey, err := utils.GenerateEncryptionKey() // Recuperar a chave de criptografia correta
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error generating encryption key"})
-		return
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Error generating encryption key"})
 	}
 	var decryptedFile bytes.Buffer
 	err = utils.DecryptStream(bytes.NewReader(fileContent), &decryptedFile, encryptionKey)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error decrypting the file"})
-		return
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Error decrypting the file"})
 	}
 
-	c.Data(http.StatusOK, "application/octet-stream", decryptedFile.Bytes())
+	return c.Blob(http.StatusOK, "application/octet-stream", decryptedFile.Bytes())
 }
 
-func (f *FileController) Delete(c *gin.Context) {
+// Delete function to handle file deletion
+func (f *FileController) Delete(c echo.Context) error {
 	logrus.Info("Recebendo solicitação de exclusão de arquivo")
 	deleteCounter.Inc()
 
 	filename := c.Param("id")
 	if err := f.Storage.Delete(filename); err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
-		return
+		return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "File not found"})
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "File deleted"})
+	return c.JSON(http.StatusOK, map[string]interface{}{"message": "File deleted"})
 }
 
 // ListFiles function to list all uploaded files
-func (f *FileController) ListFiles(c *gin.Context) {
+func (f *FileController) ListFiles(c echo.Context) error {
 	logrus.Info("Recebendo solicitação de listagem de arquivos")
 	files, err := ioutil.ReadDir("./uploads")
 	if err != nil {
-		c.JSON(500, gin.H{"error": "Error reading directory"})
-		return
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Error reading directory"})
 	}
 	var fileList []string
 	for _, file := range files {
 		fileList = append(fileList, file.Name()) // Append each file name to the list
 	}
-	c.JSON(200, fileList)
+	return c.JSON(http.StatusOK, fileList)
 }
 
 // Update function to handle file updates (replace an existing file)
-func (f *FileController) Update(c *gin.Context) {
+func (f *FileController) Update(c echo.Context) error {
 	logrus.Info("Recebendo solicitação de atualização de arquivo")
 	id := c.Param("id")
 	filePath := "./uploads/" + id
 
 	// Check if the file exists
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
-		c.JSON(404, gin.H{"error": "File not found"})
-		return
+		return c.JSON(http.StatusNotFound, map[string]interface{}{"error": "File not found"})
 	}
 
 	// Get the new file and header to replace the old one
-	_, header, err := c.Request.FormFile("file")
+	file, err := c.FormFile("file")
 	if err != nil {
-		c.JSON(400, gin.H{"error": "File not found"})
-		return
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "File not found"})
 	}
 
-	if header.Size > 15*1024*1024*1024 {
-		c.JSON(413, gin.H{"error": "File size exceeds the limit of 10GB"})
-		return
+	if file.Size > 15*1024*1024*1024 {
+		return c.JSON(http.StatusRequestEntityTooLarge, map[string]interface{}{"error": "File size exceeds the limit of 15GB"})
 	}
 
 	allowed := []string{"image/jpeg", "image/png", "application/pdf", "application/zip", "application/x-rar-compressed", "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-powerpoint", "application/vnd.openxmlformats-officedocument.presentationml.presentation", "text/plain"}
-	if !contains(allowed, header.Header.Get("Content-Type")) {
-		c.JSON(415, gin.H{"error": "File type not allowed"})
-		return
+	if !contains(allowed, file.Header.Get("Content-Type")) {
+		return c.JSON(http.StatusUnsupportedMediaType, map[string]interface{}{"error": "File type not allowed"})
 	}
 
 	// Remove the old file
 	err = os.Remove(filePath)
 	if err != nil {
-		c.JSON(500, gin.H{"error": "Error deleting the old file"})
-		return
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Error deleting the old file"})
 	}
 
 	// Save the new file using the header information
-	err = c.SaveUploadedFile(header, filePath)
+	src, err := file.Open()
 	if err != nil {
-		c.JSON(500, gin.H{"error": "Error saving the new file"})
-		return
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Error opening the new file"})
+	}
+	defer src.Close()
+	dst, err := os.Create(filePath)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Error creating new file"})
+	}
+	defer dst.Close()
+	if _, err = io.Copy(dst, src); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Error writing new file"})
 	}
 
-	c.JSON(200, gin.H{"message": "File updated"})
+	return c.JSON(http.StatusOK, map[string]interface{}{"message": "File updated"})
 }
 
 func contains(s []string, e string) bool {
