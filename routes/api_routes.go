@@ -15,7 +15,7 @@ func RegisterRoutes(e *echo.Echo) {
 
 	// Protected routes
 	protected := e.Group("/api")
-	protected.Use(middlewares.AuthMiddleware)
+	protected.Use(middlewares.AuthMiddleware())
 	protected.GET("/protected-resource", func(c echo.Context) error {
 		return c.JSON(http.StatusOK, echo.Map{
 			"message": "Access granted to protected resource",

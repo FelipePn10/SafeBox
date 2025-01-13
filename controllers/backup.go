@@ -1,10 +1,6 @@
 package controllers
 
 import (
-	"SafeBox/models"
-	"SafeBox/repositories"
-	"SafeBox/storage"
-	"SafeBox/utils"
 	"bytes"
 	"context"
 	"errors"
@@ -15,21 +11,29 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gin-gonic/gin"
+	"github.com/labstack/echo/v4"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sync/semaphore"
+
+	"SafeBox/models"
+	"SafeBox/repositories"
+	"SafeBox/storage"
+	"SafeBox/utils"
 )
 
-type BackupController struct {
-	Storage storage.Storage
-}
-
+// BackupResult holds the results of a backup operation
 type BackupResult struct {
 	SuccessCount int
 	FailedFiles  []string
 	Error        error
 }
 
+// BackupController manages backup operations
+type BackupController struct {
+	Storage storage.Storage
+}
+
+// NewBackupController initializes a new BackupController with the given storage
 func NewBackupController(storage storage.Storage) *BackupController {
 	if storage == nil {
 		panic("storage cannot be nil")
@@ -37,6 +41,7 @@ func NewBackupController(storage storage.Storage) *BackupController {
 	return &BackupController{Storage: storage}
 }
 
+// validatePath checks if the given path is valid and accessible
 func validatePath(path string) error {
 	if path == "" {
 		return errors.New("path cannot be empty")
@@ -52,6 +57,7 @@ func validatePath(path string) error {
 	return nil
 }
 
+// compressAndEncrypt compresses and encrypts a file
 func compressAndEncrypt(filePath string) ([]byte, string, error) {
 	compressedFile, err := utils.Compress(filePath)
 	if err != nil {
@@ -67,11 +73,10 @@ func compressAndEncrypt(filePath string) ([]byte, string, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("encryption failed: %w", err)
 	}
-	encryptedFile := encryptedBuffer.Bytes()
-
-	return encryptedFile, string(encryptionKey), nil
+	return encryptedBuffer.Bytes(), string(encryptionKey), nil
 }
 
+// processAndUpload processes a single file for backup
 func processAndUpload(ctx context.Context, filePath, destPath string, storage storage.Storage, replace bool) error {
 	encryptedFile, encryptionKey, err := compressAndEncrypt(filePath)
 	if err != nil {
@@ -96,7 +101,6 @@ func processAndUpload(ctx context.Context, filePath, destPath string, storage st
 		return fmt.Errorf("upload failed: %w", err)
 	}
 
-	// Store encryption key securely - implement this based on your security requirements
 	err = storeEncryptionKey(ctx, encryptionKey, destPath)
 	if err != nil {
 		return fmt.Errorf("failed to store encryption key: %w", err)
@@ -105,6 +109,7 @@ func processAndUpload(ctx context.Context, filePath, destPath string, storage st
 	return nil
 }
 
+// backupDirectory backups a directory, processing files concurrently
 func backupDirectory(ctx context.Context, basePath, destDir string, storage storage.Storage, replace bool, maxWorkers int) BackupResult {
 	var (
 		wg            sync.WaitGroup
@@ -171,36 +176,31 @@ func backupDirectory(ctx context.Context, basePath, destDir string, storage stor
 	}
 }
 
-func (b *BackupController) handleBackup(c *gin.Context, basePath, destDir string) {
-	logrus.WithFields(logrus.Fields{
-		"basePath": basePath,
-		"destDir":  destDir,
-	}).Info("Starting backup")
+// handleBackup manages the backup process for a given path
+func (b *BackupController) handleBackup(c echo.Context, basePath, destDir string) error {
+	replace := c.QueryParam("replace") == "true"
 
 	if err := validatePath(basePath); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 	}
 
-	replace := c.Query("replace") == "true"
-
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), 10*time.Minute)
 	defer cancel()
 
 	result := backupDirectory(ctx, basePath, destDir, b.Storage, replace, 10)
 	if result.Error != nil {
 		logrus.WithError(result.Error).Error("Backup failed")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error performing backup"})
-		return
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Error performing backup"})
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	return c.JSON(http.StatusOK, map[string]interface{}{
 		"message":      "Backup completed",
 		"successCount": result.SuccessCount,
 		"failedFiles":  result.FailedFiles,
 	})
 }
 
+// createBackupRecord creates a backup record in the database
 func (b *BackupController) createBackupRecord(ctx context.Context, user *models.User, appName, filePath string) error {
 	backup := models.Backup{
 		UserID:   user.ID,
@@ -230,39 +230,32 @@ func (b *BackupController) createBackupRecord(ctx context.Context, user *models.
 	return tx.Commit().Error
 }
 
-func (b *BackupController) validateUser(c *gin.Context) (*models.User, error) {
-	user, ok := c.Get("user")
+// validateUser checks if a user is present in the context
+func (b *BackupController) validateUser(c echo.Context) (*models.User, error) {
+	user, ok := c.Get("user").(*models.User)
 	if !ok {
-		return nil, errors.New("user not found in context")
+		return nil, errors.New("user not found in context or not of type *models.User")
 	}
-
-	userModel, ok := user.(*models.User)
-	if !ok {
-		return nil, errors.New("user is not of type *models.User")
-	}
-
-	return userModel, nil
+	return user, nil
 }
 
-func (b *BackupController) handleAppBackup(c *gin.Context, appName string) {
+// handleAppBackup performs backup for a specific application
+func (b *BackupController) handleAppBackup(c echo.Context, appName string) error {
 	user, err := b.validateUser(c)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
 	}
 
-	appPath := c.Query(appName + "_path")
+	appPath := c.QueryParam(appName + "_path")
 	if appPath == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%s path not provided", appName)})
-		return
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": fmt.Sprintf("%s path not provided", appName)})
 	}
 
 	if err := validatePath(appPath); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), 10*time.Minute)
 	defer cancel()
 
 	result := backupDirectory(ctx, appPath, appName+"_backup", b.Storage, false, 5)
@@ -271,8 +264,7 @@ func (b *BackupController) handleAppBackup(c *gin.Context, appName string) {
 			"appName": appName,
 			"error":   result.Error,
 		}).Error("Error backing up app")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Error backing up %s", appName)})
-		return
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": fmt.Sprintf("Error backing up %s", appName)})
 	}
 
 	for _, filePath := range result.FailedFiles {
@@ -285,8 +277,8 @@ func (b *BackupController) handleAppBackup(c *gin.Context, appName string) {
 		}
 	}
 
+	// Here we'd need a way to get paths for successful backups, which might require additional logic or passing more data
 	for i := 0; i < result.SuccessCount; i++ {
-		// Assuming we have a way to get the file path for successful backups, for example from a list
 		filePath := fmt.Sprintf("successful_backup_%d", i)
 		if err := b.createBackupRecord(ctx, user, appName, filePath); err != nil {
 			logrus.WithFields(logrus.Fields{
@@ -297,33 +289,34 @@ func (b *BackupController) handleAppBackup(c *gin.Context, appName string) {
 		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	return c.JSON(http.StatusOK, map[string]interface{}{
 		"message":      fmt.Sprintf("%s backup completed successfully", appName),
 		"successCount": result.SuccessCount,
 		"failedFiles":  result.FailedFiles,
 	})
 }
 
-func (b *BackupController) BackupGallery(c *gin.Context) {
-	b.handleAppBackup(c, "gallery")
+// BackupGallery handles backup for gallery application
+func (b *BackupController) BackupGallery(c echo.Context) error {
+	return b.handleAppBackup(c, "gallery")
 }
 
-func (b *BackupController) BackupWhatsApp(c *gin.Context) {
-	b.handleAppBackup(c, "whatsapp")
+// BackupWhatsApp handles backup for WhatsApp application
+func (b *BackupController) BackupWhatsApp(c echo.Context) error {
+	return b.handleAppBackup(c, "whatsapp")
 }
 
-func (b *BackupController) BackupApp(c *gin.Context) {
-	appName := c.Query("app_name")
+// BackupApp handles backup for any application specified by query parameter
+func (b *BackupController) BackupApp(c echo.Context) error {
+	appName := c.QueryParam("app_name")
 	if appName == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "App name not provided"})
-		return
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": "App name not provided"})
 	}
-	b.handleAppBackup(c, appName)
+	return b.handleAppBackup(c, appName)
 }
 
 // Placeholder function for storing encryption key securely
 func storeEncryptionKey(ctx context.Context, key, filePath string) error {
 	// Implement the logic to securely store the encryption key here
-	// This is just a placeholder function
 	return nil
 }
