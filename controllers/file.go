@@ -87,7 +87,7 @@ func (f *FileController) Upload(c echo.Context) error {
 	// Atualizar espaço de armazenamento usado
 	user.StorageUsed += file.Size
 	// Salvar usuário atualizado no banco de dados
-	if err := repositories.NewUserRepository(repositories.DBConection).Update(user); err != nil {
+	if err := repositories.NewUserRepository(repositories.DBConnection).Update(user); err != nil {
 		logrus.Error("Erro ao atualizar espaço de armazenamento usado: ", err)
 		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Error updating storage usage"})
 	}

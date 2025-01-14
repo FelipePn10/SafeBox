@@ -3,10 +3,8 @@ package services
 import (
 	"SafeBox/models"
 	"SafeBox/repositories"
-	"SafeBox/utils"
-	"errors"
 
-	"github.com/sirupsen/logrus"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type AuthService struct {
@@ -18,34 +16,23 @@ func NewAuthService(userRepo *repositories.UserRepository) *AuthService {
 }
 
 func (s *AuthService) Register(user *models.User) error {
-	// Set storage plan and limit for new users
-	user.Plan = "free"
-	user.StorageLimit = 15 * 1024 * 1024 * 1024 // 15 GB
-
-	if err := s.userRepo.Create(user); err != nil {
-		logrus.Error("Error registering user: ", err)
-		return errors.New("error registering user")
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(user.Password), bcrypt.DefaultCost)
+	if err != nil {
+		return err
 	}
-	return nil
+	user.Password = string(hashedPassword)
+	return s.userRepo.Create(user)
 }
 
-func (s *AuthService) Login(username, password string) (string, error) {
+func (s *AuthService) Login(username, password string) (*models.User, error) {
 	user, err := s.userRepo.FindByUsername(username)
 	if err != nil {
-		logrus.Error("User not found: ", err)
-		return "", errors.New("user not found")
+		return nil, err
 	}
 
-	if !utils.ComparePasswords(user.Password, password) {
-		logrus.Error("Invalid password")
-		return "", errors.New("invalid password")
+	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(password)); err != nil {
+		return nil, err
 	}
 
-	tokens, err := utils.GenerateOAuthToken(user.Username)
-	if err != nil {
-		logrus.Error("Error generating tokens: ", err)
-		return "", errors.New("error generating token")
-	}
-
-	return tokens.AccessToken, nil
+	return user, nil
 }

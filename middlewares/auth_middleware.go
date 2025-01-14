@@ -1,72 +1,102 @@
+// middlewares/middleware.go
 package middlewares
 
 import (
 	"SafeBox/models"
+	"SafeBox/repositories"
+	"SafeBox/utils"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/labstack/echo/v4"
-	"google.golang.org/api/oauth2/v2"
-	"google.golang.org/api/option"
 )
 
-// AuthConfig holds configuration for authentication middleware
+// AuthConfig define as configurações para o middleware de autenticação
 type AuthConfig struct {
 	RequireToken      bool
 	Require2FA        bool
 	RequirePermission []models.Permission
 }
 
-// NewAuthMiddleware creates a new authentication middleware with the given configuration
-func NewAuthMiddleware(config AuthConfig) echo.MiddlewareFunc {
+// UserPlanConfig define as configurações para verificação do plano do usuário
+type UserPlanConfig struct {
+	AllowedPlans []string
+}
+
+// TokenValidator interface para validação de tokens
+type TokenValidator interface {
+	ValidateToken(token string) (*utils.TokenClaims, error)
+}
+
+// AuthMiddleware implementa as funções de autenticação
+type AuthMiddleware struct {
+	tokenValidator TokenValidator
+	userRepo       repositories.UserRepository
+}
+
+// NewAuthMiddleware cria uma nova instância do middleware de autenticação
+func NewAuthMiddleware(validator TokenValidator, userRepo repositories.UserRepository) *AuthMiddleware {
+	return &AuthMiddleware{
+		tokenValidator: validator,
+		userRepo:       userRepo,
+	}
+}
+
+// RequireAuth retorna um middleware que requer apenas autenticação
+func (am *AuthMiddleware) RequireAuth() echo.MiddlewareFunc {
+	return am.WithConfig(AuthConfig{
+		RequireToken: true,
+	})
+}
+
+// RequireAuthWith2FA retorna um middleware que requer autenticação e 2FA
+func (am *AuthMiddleware) RequireAuthWith2FA() echo.MiddlewareFunc {
+	return am.WithConfig(AuthConfig{
+		RequireToken: true,
+		Require2FA:   true,
+	})
+}
+
+// RequirePermissions retorna um middleware que requer autenticação e permissões específicas
+func (am *AuthMiddleware) RequirePermissions(permissions ...models.Permission) echo.MiddlewareFunc {
+	return am.WithConfig(AuthConfig{
+		RequireToken:      true,
+		RequirePermission: permissions,
+	})
+}
+
+// WithConfig retorna um middleware com configurações personalizadas
+func (am *AuthMiddleware) WithConfig(config AuthConfig) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
-			// Token validation
 			if config.RequireToken {
-				token := c.Request().Header.Get("Authorization")
+				token := extractToken(c)
 				if token == "" {
-					return c.JSON(http.StatusUnauthorized, echo.Map{
-						"error": "Token de autorização não encontrado",
-					})
+					return echo.NewHTTPError(http.StatusUnauthorized, "Token de autorização não encontrado")
 				}
 
-				userEmail, err := ValidateGoogleToken(c, token)
+				claims, err := am.tokenValidator.ValidateToken(token)
 				if err != nil {
-					return c.JSON(http.StatusUnauthorized, echo.Map{
-						"error": fmt.Sprintf("Token inválido: %v", err),
-					})
+					return echo.NewHTTPError(http.StatusUnauthorized, fmt.Sprintf("Token inválido: %v", err))
 				}
 
-				// Fetch user from database
-				var oauthUser models.OAuthUser
-				// TODO: Implement user fetch from database using userEmail
-				// repositories.DBConnection.Where("email = ?", userEmail).First(&oauthUser)
-
-				// Store user in context for later use
-				c.Set("oauth_user", oauthUser)
-
-				// 2FA validation if required
-				if config.Require2FA && !validate2FA(userEmail) {
-					return c.JSON(http.StatusForbidden, echo.Map{
-						"error": "Validação 2FA falhou",
-					})
-				}
-			}
-
-			// Permission validation
-			if len(config.RequirePermission) > 0 {
-				oauthUser, ok := c.Get("oauth_user").(models.OAuthUser)
-				if !ok {
-					return c.JSON(http.StatusUnauthorized, echo.Map{
-						"error": "Usuário não autenticado",
-					})
+				user, err := am.userRepo.FindByUsername(claims.Username)
+				if err != nil {
+					return echo.NewHTTPError(http.StatusUnauthorized, "Usuário não encontrado")
 				}
 
-				for _, permission := range config.RequirePermission {
-					if !hasPermission(oauthUser.Permissions, permission) {
-						return c.JSON(http.StatusForbidden, echo.Map{
-							"error": "Permissão negada",
-						})
+				c.Set("user", user)
+
+				if config.Require2FA {
+					if err := validate2FA(c, user); err != nil {
+						return err
+					}
+				}
+
+				if len(config.RequirePermission) > 0 {
+					if err := validatePermissions(user, config.RequirePermission); err != nil {
+						return err
 					}
 				}
 			}
@@ -76,34 +106,56 @@ func NewAuthMiddleware(config AuthConfig) echo.MiddlewareFunc {
 	}
 }
 
-// ValidateGoogleToken validates the Google OAuth token and returns the user's email
-func ValidateGoogleToken(c echo.Context, token string) (string, error) {
-	service, err := oauth2.NewService(c.Request().Context(), option.WithHTTPClient(http.DefaultClient))
-	if err != nil {
-		return "", fmt.Errorf("falha ao criar serviço OAuth2: %w", err)
-	}
+// CheckUserPlan verifica o plano e limites de armazenamento do usuário
+func CheckUserPlan() echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			user, ok := c.Get("user").(*models.User)
+			if !ok {
+				return echo.NewHTTPError(http.StatusInternalServerError, "Usuário não encontrado no contexto")
+			}
 
-	tokenInfoCall := service.Tokeninfo()
-	tokenInfoCall.AccessToken(token)
-	tokenInfo, err := tokenInfoCall.Do()
-	if err != nil {
-		return "", fmt.Errorf("falha ao validar token: %w", err)
-	}
+			if user.Plan == "free" && user.StorageUsed >= user.StorageLimit {
+				return echo.NewHTTPError(http.StatusForbidden, "Limite de armazenamento excedido")
+			}
 
-	if tokenInfo.Email == "" || !tokenInfo.VerifiedEmail {
-		return "", fmt.Errorf("email não verificado ou ausente")
+			return next(c)
+		}
 	}
-
-	return tokenInfo.Email, nil
 }
 
-// validate2FA verifies 2FA for a given user
-func validate2FA(email string) bool {
-	// TODO: Implement actual 2FA validation logic
-	return true
+// Funções auxiliares privadas
+func extractToken(c echo.Context) string {
+	token := c.Request().Header.Get("Authorization")
+	return strings.TrimPrefix(token, "Bearer ")
 }
 
-// hasPermission checks if a permission exists within a slice of permissions
+func validate2FA(c echo.Context, user *models.User) error {
+	code := c.Request().Header.Get("X-2FA-Code")
+	if code == "" {
+		return echo.NewHTTPError(http.StatusForbidden, "Código 2FA necessário")
+	}
+
+	isValid, err := utils.VerifyTwoFactorCode(user.TwoFASecret, code)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Erro na validação 2FA: %v", err))
+	}
+	if !isValid {
+		return echo.NewHTTPError(http.StatusForbidden, "Código 2FA inválido")
+	}
+
+	return nil
+}
+
+func validatePermissions(user *models.User, requiredPermissions []models.Permission) error {
+	for _, required := range requiredPermissions {
+		if !hasPermission(user.Permissions, required) {
+			return echo.NewHTTPError(http.StatusForbidden, "Permissão negada")
+		}
+	}
+	return nil
+}
+
 func hasPermission(permissions []models.Permission, target models.Permission) bool {
 	for _, permission := range permissions {
 		if permission == target {
@@ -111,25 +163,4 @@ func hasPermission(permissions []models.Permission, target models.Permission) bo
 		}
 	}
 	return false
-}
-
-// Convenience functions for common middleware configurations
-func RequireAuth() echo.MiddlewareFunc {
-	return NewAuthMiddleware(AuthConfig{
-		RequireToken: true,
-	})
-}
-
-func RequireAuthWith2FA() echo.MiddlewareFunc {
-	return NewAuthMiddleware(AuthConfig{
-		RequireToken: true,
-		Require2FA:   true,
-	})
-}
-
-func RequirePermissions(permissions ...models.Permission) echo.MiddlewareFunc {
-	return NewAuthMiddleware(AuthConfig{
-		RequireToken:      true,
-		RequirePermission: permissions,
-	})
 }

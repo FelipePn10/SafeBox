@@ -3,8 +3,9 @@ package models
 import "time"
 
 type OAuthUser struct {
-	ID          string       `json:"id"`
-	Email       string       `json:"email"`
+	ID          uint   `gorm:"primaryKey"`
+	Email       string `gorm:"uniqueIndex"`
+	TwoFASecret string
 	Username    string       `json:"username"`
 	Avatar      string       `json:"avatar"`
 	Provider    string       `json:"provider"`

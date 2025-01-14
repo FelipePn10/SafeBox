@@ -4,10 +4,11 @@ import "time"
 
 // Backup represents a backup entry in the database
 type Backup struct {
-	ID       uint   `gorm:"primaryKey"`
-	UserID   uint   `gorm:"not null"`
-	AppName  string `gorm:"not null"`
-	FilePath string `gorm:"not null"`
+	ID        uint      `gorm:"primaryKey"`
+	UserID    uint      `gorm:"not null"`
+	AppName   string    `gorm:"not null"`
+	FilePath  string    `gorm:"not null"`
+	CreatedAt time.Time `gorm:"autoCreateTime"`
 }
 
 // BackupHistory represents the history of backups in the database

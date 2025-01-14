@@ -1,77 +1,60 @@
 package main
 
 import (
-	"SafeBox/config"
-	"SafeBox/controllers"
 	"SafeBox/middlewares"
+	"SafeBox/models"
 	"SafeBox/repositories"
 	"SafeBox/routes"
 	"SafeBox/services"
-	"fmt"
+	"log"
+	"os"
 
 	"github.com/joho/godotenv"
-	"github.com/labstack/echo/v4"
-	"github.com/sirupsen/logrus"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 )
 
-func init() {
-	// Configure logging
-	logrus.SetFormatter(&logrus.JSONFormatter{})
-	logrus.SetLevel(logrus.InfoLevel)
+func main() {
+	// Carrega variáveis de ambiente do arquivo .env
+	if err := godotenv.Load(); err != nil {
+		log.Fatalf("Error loading .env file: %v", err)
+	}
+
+	// Configuração do banco de dados PostgreSQL
+	dsn := buildDatabaseDSN()
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err != nil {
+		log.Fatalf("Failed to connect to database: %v", err)
+	}
+
+	// Migrações
+	db.AutoMigrate(&models.User{}, &models.Backup{}, &models.BackupHistory{}, &models.TempTwoFASecret{})
+
+	// Repositórios
+	userRepo := repositories.NewUserRepository(db)
+	backupRepo := repositories.NewBackupRepository(db)
+	twoFactorRepo := repositories.NewTwoFactorRepository(db)
+
+	//middlewares
+	authMiddleware := middlewares.NewAuthMiddleware(authService.TokenValidator, userRepo)
+
+	// Serviços
+	authService := services.NewAuthService(userRepo)
+	backupService := services.NewBackupService(backupRepo)
+	twoFactorService := services.NewTwoFactorService(twoFactorRepo)
+
+	// Configuração do Echo e registro das rotas
+	e := routes.NewRouteConfig(authService, backupService, twoFactorService)
+	e.Start(":" + os.Getenv("PORT"))
 }
 
-func main() {
-	// Load environment variables
-	if err := godotenv.Load(); err != nil {
-		logrus.Fatal("Error loading environment variables: ", err)
-	}
+// buildDatabaseDSN constrói a string de conexão do PostgreSQL a partir das variáveis de ambiente
+func buildDatabaseDSN() string {
+	host := os.Getenv("DB_HOST")
+	port := os.Getenv("DB_PORT")
+	user := os.Getenv("DB_USER")
+	password := os.Getenv("DB_PASSWORD")
+	dbname := os.Getenv("DB_NAME")
 
-	// Load configuration
-	cfg := config.LoadConfig()
-	if cfg == nil {
-		logrus.Fatal("Failed to load configurations")
-	}
-	logrus.Infof("Configurations successfully loaded: %+v", cfg)
-
-	repositories.InitDB(repositories.DBConfig{
-		DB_HOST:     cfg.DBHost,
-		DB_USER:     cfg.DBUser,
-		DB_PASSWORD: cfg.DBPassword,
-		DB_NAME:     cfg.DBName,
-		DB_PORT:     fmt.Sprintf("%d", cfg.DBPort),
-	})
-	// Initialize database connection
-	dbConn := repositories.DBConection
-	userRepo := repositories.NewUserRepository(dbConn)
-
-	// Initialize services
-	authService := services.NewAuthService(userRepo)
-
-	// Initialize controllers
-	fileController := controllers.NewFileController(nil) // Storage will be initialized by RouteConfig
-
-	// Set up Echo router
-	e := echo.New()
-
-	// Apply global middlewares
-	e.Use(middlewares.RecoveryMiddleware())
-	e.Use(middlewares.ErrorHandler())
-
-	// Create route configuration
-	routeConfig, err := routes.NewRouteConfig(e, authService, fileController)
-	if err != nil {
-		logrus.Fatalf("Failed to create route config: %v", err)
-	}
-
-	// Register all routes
-	routeConfig.RegisterAllRoutes()
-
-	// Configure custom error handler
-	//e.HTTPErrorHandler = middlewares.CustomErrorHandler
-
-	// Start server
-	serverAddr := (":8080")
-	if err := e.Start(serverAddr); err != nil {
-		logrus.Fatal("Error starting server: ", err)
-	}
+	return "host=" + host + " port=" + port + " user=" + user + " password=" + password + " dbname=" + dbname + " sslmode=disable TimeZone=UTC"
 }

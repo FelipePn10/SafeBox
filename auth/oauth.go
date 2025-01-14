@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 
 	"SafeBox/models"
@@ -23,8 +24,10 @@ import (
 
 var (
 	GoogleOAuthConfig *oauth2.Config
+	stateTokens       = make(map[string]bool) // To store and validate state tokens
 )
 
+// Initialize OAuth configuration
 func init() {
 	err := godotenv.Load()
 	if err != nil {
@@ -48,48 +51,14 @@ func init() {
 	}
 }
 
-// GenerateOAuthToken creates a token for the given username
-func GenerateOAuthToken(username string) (*oauth2.Token, error) {
-	logrus.WithField("username", username).Info("Generating OAuth token")
-	return &oauth2.Token{
-		AccessToken:  fmt.Sprintf("access-token-%s", username),
-		RefreshToken: fmt.Sprintf("refresh-token-%s", username),
-	}, nil
-}
-
-// RefreshOAuthToken refreshes an existing OAuth token
-func RefreshOAuthToken(refreshToken string) (*oauth2.Token, error) {
-	logrus.WithField("refresh_token", refreshToken).Info("Refreshing OAuth token")
-	token := &oauth2.Token{RefreshToken: refreshToken}
-	newToken, err := GoogleOAuthConfig.TokenSource(context.Background(), token).Token()
+// parseUserID converts a string to a uint
+func parseUserID(idStr string) uint {
+	id, err := strconv.ParseUint(idStr, 10, 32)
 	if err != nil {
-		return nil, fmt.Errorf("failed to refresh token: %w", err)
+		logrus.WithError(err).Error("Failed to parse user ID")
+		return 0
 	}
-	return newToken, nil
-}
-
-// RevokeToken revokes the given OAuth token
-func RevokeToken(token string) error {
-	logrus.WithField("token", token).Info("Revoking OAuth token")
-	req, err := http.NewRequest("POST", "https://oauth2.googleapis.com/revoke",
-		strings.NewReader(fmt.Sprintf("token=%s", token)))
-	if err != nil {
-		return fmt.Errorf("failed to create revoke request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to execute revoke request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to revoke token: status %d", resp.StatusCode)
-	}
-
-	return nil
+	return uint(id)
 }
 
 // generateStateToken generates a secure, random state token for OAuth flow
@@ -100,7 +69,9 @@ func generateStateToken() string {
 		logrus.WithError(err).Error("Failed to generate state token")
 		return ""
 	}
-	return base64.StdEncoding.EncodeToString(b)
+	token := base64.StdEncoding.EncodeToString(b)
+	stateTokens[token] = true
+	return token
 }
 
 // OAuthLogin redirects the user to Google's OAuth 2.0 authentication page
@@ -116,20 +87,27 @@ func OAuthCallback(c echo.Context) error {
 	logger := logrus.WithField("handler", "OAuthCallback")
 	logger.Info("Processing OAuth callback")
 
+	// Retrieve and validate state token
+	state := c.QueryParam("state")
+	if !stateTokens[state] {
+		logger.Error("Invalid or missing state token")
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid state token"})
+	}
+	delete(stateTokens, state) // Consume state token
+
 	code := c.QueryParam("code")
 	if code == "" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Authorization code not provided"})
 	}
 
-	// TODO: Verify state parameter to prevent CSRF attacks
-
 	ctx := context.Background()
 	token, err := GoogleOAuthConfig.Exchange(ctx, code)
 	if err != nil {
 		logger.WithError(err).Error("Failed to exchange authorization code")
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Authentication failed"})
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to exchange authorization code"})
 	}
 
+	// Retrieve user info from Google
 	userInfo, err := GetUserInfoFromGoogle(token)
 	if err != nil {
 		logger.WithError(err).Error("Failed to retrieve user info")
@@ -137,13 +115,14 @@ func OAuthCallback(c echo.Context) error {
 	}
 
 	oauthUser := models.OAuthUser{
-		ID:       fmt.Sprintf("%v", userInfo["sub"]),
+		ID:       parseUserID(fmt.Sprintf("%v", userInfo["sub"])),
 		Email:    fmt.Sprintf("%v", userInfo["email"]),
 		Username: fmt.Sprintf("%v", userInfo["name"]),
 		Avatar:   fmt.Sprintf("%v", userInfo["picture"]),
 	}
 
-	result := repositories.DBConection.Create(&oauthUser)
+	// Save user in database
+	result := repositories.DBConnection.Create(&oauthUser)
 	if result.Error != nil {
 		logger.WithError(result.Error).Error("Failed to create user in database")
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to create user"})
@@ -171,4 +150,28 @@ func GetUserInfoFromGoogle(token *oauth2.Token) (map[string]interface{}, error) 
 	}
 
 	return userInfo, nil
+}
+
+// RevokeToken revokes the given OAuth token
+func RevokeToken(token string) error {
+	logrus.WithField("token", token).Info("Revoking OAuth token")
+	req, err := http.NewRequest("POST", "https://oauth2.googleapis.com/revoke",
+		strings.NewReader(fmt.Sprintf("token=%s", token)))
+	if err != nil {
+		return fmt.Errorf("failed to create revoke request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to execute revoke request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to revoke token: status %d", resp.StatusCode)
+	}
+
+	return nil
 }

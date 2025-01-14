@@ -1,3 +1,4 @@
+// routes/routes.go
 package routes
 
 import (
@@ -8,143 +9,171 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/joho/godotenv"
 	"github.com/labstack/echo/v4"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-// Metrics definitions
-var (
-	metrics = struct {
-		uploads   prometheus.Counter
-		downloads prometheus.Counter
-		deletes   prometheus.Counter
-	}{
+// Metrics estrutura para manter todas as métricas do Prometheus
+type Metrics struct {
+	uploads   prometheus.Counter
+	downloads prometheus.Counter
+	deletes   prometheus.Counter
+}
+
+// newMetrics inicializa e registra todas as métricas do Prometheus
+func newMetrics() *Metrics {
+	m := &Metrics{
 		uploads: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "safebox_uploads_total",
-			Help: "Total de uploads realizados",
+			Namespace: "safebox",
+			Name:      "uploads_total",
+			Help:      "Total de uploads realizados",
 		}),
 		downloads: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "safebox_downloads_total",
-			Help: "Total de downloads realizados",
+			Namespace: "safebox",
+			Name:      "downloads_total",
+			Help:      "Total de downloads realizados",
 		}),
 		deletes: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "safebox_deletes_total",
-			Help: "Total de exclusões realizadas",
+			Namespace: "safebox",
+			Name:      "deletes_total",
+			Help:      "Total de exclusões realizadas",
 		}),
 	}
-)
 
-// RouteConfig holds all dependencies needed for route configuration
-type RouteConfig struct {
-	Echo           *echo.Echo
-	AuthService    *services.AuthService
-	FileController *controllers.FileController
-	Storage        storage.Storage
+	prometheus.MustRegister(
+		m.uploads,
+		m.downloads,
+		m.deletes,
+	)
+
+	return m
 }
 
-// NewRouteConfig creates a new RouteConfig with all necessary dependencies
-func NewRouteConfig(e *echo.Echo, authService *services.AuthService, fileController *controllers.FileController) (*RouteConfig, error) {
+// AppControllers agrupa todos os controladores da aplicação
+type AppControllers struct {
+	Auth      *controllers.AuthController
+	Backup    *controllers.BackupController
+	TwoFactor *controllers.TwoFactorController
+	File      *controllers.FileController
+}
+
+// Config contém todas as configurações necessárias para as rotas
+type Config struct {
+	Echo        *echo.Echo
+	Controllers AppControllers
+	Metrics     *Metrics
+}
+
+// NewRouteConfig cria uma nova configuração de rotas com todas as dependências necessárias
+func NewRouteConfig(authService *services.AuthService, backupService *services.BackupService,
+	twoFactorService *services.TwoFactorService) (*echo.Echo, error) {
+	e := echo.New()
+
+	if err := godotenv.Load(); err != nil {
+		return nil, fmt.Errorf("erro ao carregar arquivo .env: %w", err)
+	}
+
 	storage, err := setupStorage()
 	if err != nil {
-		return nil, fmt.Errorf("failed to setup storage: %w", err)
+		return nil, fmt.Errorf("erro ao configurar storage: %w", err)
 	}
 
-	return &RouteConfig{
-		Echo:           e,
-		AuthService:    authService,
-		FileController: fileController,
-		Storage:        storage,
-	}, nil
+	// Inicializa o middleware de autenticação
+	authMiddleware := middlewares.NewAuthMiddleware(authService)
+
+	controllers := AppControllers{
+		Auth:      controllers.NewAuthController(authService),
+		Backup:    controllers.NewBackupController(backupService),
+		TwoFactor: controllers.NewTwoFactorController(),
+		File:      controllers.NewFileController(storage),
+	}
+
+	metrics := newMetrics()
+
+	config := &Config{
+		Echo:        e,
+		Controllers: controllers,
+		Metrics:     metrics,
+	}
+
+	// Registra as rotas usando o novo middleware
+	if err := registerRoutes(config, authMiddleware); err != nil {
+		return nil, fmt.Errorf("erro ao registrar rotas: %w", err)
+	}
+
+	return e, nil
 }
 
-// setupStorage initializes the storage backend
+// setupStorage inicializa o backend de armazenamento
 func setupStorage() (storage.Storage, error) {
-	bucketName := os.Getenv("R2_BUCKET_NAME")
-	if bucketName == "" {
-		return nil, fmt.Errorf("environment variable R2_BUCKET_NAME not set")
+	config := storage.R2Config{
+		Bucket:          os.Getenv("R2_BUCKET_NAME"),
+		AccountID:       os.Getenv("R2_ACCOUNT_ID"),
+		AccessKeyID:     os.Getenv("R2_ACCESS_KEY_ID"),
+		SecretAccessKey: os.Getenv("R2_SECRET_ACCESS_KEY"),
 	}
 
-	accountID := os.Getenv("R2_ACCOUNT_ID")
-	accessKeyID := os.Getenv("R2_ACCESS_KEY_ID")
-	secretAccessKey := os.Getenv("R2_SECRET_ACCESS_KEY")
-
-	if accountID == "" || accessKeyID == "" || secretAccessKey == "" {
-		return nil, fmt.Errorf("one or more R2 configuration environment variables are not set")
+	if err := config.Validate(); err != nil {
+		return nil, fmt.Errorf("configuração R2 inválida: %w", err)
 	}
 
-	r2Config := storage.R2Config{
-		Bucket:          bucketName,
-		AccountID:       accountID,
-		AccessKeyID:     accessKeyID,
-		SecretAccessKey: secretAccessKey,
-	}
-
-	s3Storage, err := storage.NewR2Storage(r2Config)
-	if err != nil {
-		return nil, fmt.Errorf("failed to configure R2 storage: %w", err)
-	}
-
-	return s3Storage, nil
+	return storage.NewR2Storage(config)
 }
 
-// RegisterAllRoutes configures all routes for the application
-func (rc *RouteConfig) RegisterAllRoutes() {
-	// Register prometheus metrics
-	prometheus.MustRegister(metrics.uploads, metrics.downloads, metrics.deletes)
+// registerRoutes configura todas as rotas da aplicação
+func registerRoutes(config *Config, auth *middlewares.AuthMiddleware) error {
+	e := config.Echo
+	c := config.Controllers
+	m := config.Metrics
 
-	// Public routes
-	rc.registerAuthRoutes()
+	public := e.Group("")
+	registerPublicRoutes(public, c.Auth)
 
-	// Protected routes
-	rc.registerFileRoutes()
-	rc.registerBackupRoutes()
-	rc.registerMetricsRoute()
+	// Usa o novo middleware de autenticação
+	api := e.Group("/api", auth.RequireAuth())
+	registerAPIRoutes(api, c)
+
+	// Usa o novo middleware de verificação de plano
+	files := api.Group("/files", middlewares.CheckUserPlan())
+	registerFileRoutes(files, c.File, m)
+
+	e.GET("/metrics", echo.WrapHandler(promhttp.Handler()))
+
+	return nil
 }
 
-// registerAuthRoutes configures authentication-related routes
-func (rc *RouteConfig) registerAuthRoutes() {
-	authController := controllers.NewAuthController(rc.AuthService)
-
-	rc.Echo.POST("/register", authController.Register)
-	rc.Echo.POST("/login", authController.Login)
+// registerPublicRoutes registra todas as rotas públicas
+func registerPublicRoutes(g *echo.Group, auth *controllers.AuthController) {
+	g.POST("/register", auth.Register)
+	g.POST("/login", auth.Login)
 }
 
-// registerFileRoutes configures file management routes
-func (rc *RouteConfig) registerFileRoutes() {
-	files := rc.Echo.Group("/files")
-	files.Use(middlewares.RequireAuth())
-	files.Use(middlewares.CheckUserPlanMiddleware())
+// registerAPIRoutes registra todas as rotas da API protegida
+func registerAPIRoutes(g *echo.Group, c AppControllers) {
+	g.POST("/backup", c.Backup.Backup)
 
-	files.POST("/upload", func(c echo.Context) error {
-		metrics.uploads.Inc()
-		return rc.FileController.Upload(c)
+	// Rotas 2FA
+	twoFA := g.Group("/2fa")
+	twoFA.POST("/setup", c.TwoFactor.Setup2FA)
+	twoFA.POST("/enable", c.TwoFactor.Enable2FA)
+}
+
+// registerFileRoutes registra todas as rotas de arquivos
+func registerFileRoutes(g *echo.Group, fc *controllers.FileController, m *Metrics) {
+	g.POST("/upload", func(c echo.Context) error {
+		m.uploads.Inc()
+		return fc.Upload(c)
 	})
 
-	files.GET("/download/:id", func(c echo.Context) error {
-		metrics.downloads.Inc()
-		return rc.FileController.Download(c)
+	g.GET("/download/:id", func(c echo.Context) error {
+		m.downloads.Inc()
+		return fc.Download(c)
 	})
 
-	files.DELETE("/:id", func(c echo.Context) error {
-		metrics.deletes.Inc()
-		return rc.FileController.Delete(c)
+	g.DELETE("/:id", func(c echo.Context) error {
+		m.deletes.Inc()
+		return fc.Delete(c)
 	})
-}
-
-// registerBackupRoutes configures backup-related routes
-func (rc *RouteConfig) registerBackupRoutes() {
-	backupController := controllers.NewBackupController(rc.Storage)
-
-	backup := rc.Echo.Group("/backup")
-	backup.Use(middlewares.RequireAuth())
-
-	backup.POST("/gallery", backupController.BackupGallery)
-	backup.POST("/whatsapp", backupController.BackupWhatsApp)
-	backup.POST("/app", backupController.BackupApp)
-}
-
-// registerMetricsRoute configures the Prometheus metrics endpoint
-func (rc *RouteConfig) registerMetricsRoute() {
-	rc.Echo.GET("/metrics", echo.WrapHandler(promhttp.Handler()))
 }
