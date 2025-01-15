@@ -7,7 +7,6 @@ import (
 
 	"github.com/golang-jwt/jwt/v4"
 	"github.com/pquerna/otp"
-	"github.com/pquerna/otp/totp"
 )
 
 type Algorithm string
@@ -46,53 +45,12 @@ type TokenClaims struct {
 	IssuedAt       time.Time `json:"iat"`
 	ID             string    `json:"jti"`
 }
-type TwoFactorConfig struct {
-	Issuer         string
-	SecretSize     int
-	ValidityPeriod uint
-	Digits         otp.Digits
-	Algorithm      Algorithm
-}
 
 func (c *TokenClaims) Valid() error {
 	if time.Now().After(c.ExpirationTime) {
 		return errors.New("token expirado")
 	}
 	return nil
-}
-
-func DefaultTwoFactorConfig() TwoFactorConfig {
-	return TwoFactorConfig{
-		Issuer:         "SafeBox",
-		SecretSize:     32,
-		ValidityPeriod: 30,
-		Digits:         otp.DigitsSix,
-		Algorithm:      AlgorithmSHA1,
-	}
-}
-
-func ValidateWithTimeWindow(code, secret string, window int, config TwoFactorConfig) (bool, error) {
-	if code == "" || secret == "" {
-		return false, ErrInvalidCode
-	}
-
-	if window < 0 {
-		return false, fmt.Errorf("janela de tempo deve ser positiva")
-	}
-
-	algorithm, err := config.Algorithm.toOTPAlgorithm()
-	if err != nil {
-		return false, err
-	}
-
-	opts := totp.ValidateOpts{
-		Period:    config.ValidityPeriod,
-		Skew:      uint(window),
-		Digits:    config.Digits,
-		Algorithm: algorithm,
-	}
-
-	return totp.ValidateCustom(code, secret, time.Now(), opts)
 }
 
 func ValidateToken(tokenString string) (*TokenClaims, error) {

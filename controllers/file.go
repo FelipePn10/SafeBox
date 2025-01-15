@@ -63,7 +63,7 @@ func (f *FileController) Upload(c echo.Context) error {
 	defer src.Close()
 
 	// Verificar limite de armazenamento
-	user := c.Get("user").(*models.User)
+	user := c.Get("user").(*models.OAuthUser)
 	if user.Plan == "free" && user.StorageUsed+file.Size > user.StorageLimit {
 		return c.JSON(http.StatusForbidden, map[string]interface{}{"error": "Storage limit exceeded"})
 	}

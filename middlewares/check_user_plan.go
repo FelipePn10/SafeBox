@@ -11,7 +11,7 @@ import (
 func CheckUserPlanMiddleware() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
-			user, ok := c.Get("user").(*models.User)
+			user, ok := c.Get("user").(*models.OAuthUser)
 			if !ok {
 				return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "User not found in context"})
 			}

@@ -99,15 +99,46 @@ func (b *BackupController) getBackupConfig(backupType string) (*BackupConfig, er
 	}
 }
 
-func (b *BackupController) processBackup(ctx context.Context, user *models.User, config *BackupConfig) (*BackupResult, error) {
-	return &BackupResult{
-		SuccessCount: 0,
-		FailedFiles:  nil,
-	}, nil
+func (b *BackupController) processBackup(ctx context.Context, user *models.OAuthUser, config *BackupConfig) (*BackupResult, error) {
+	basePath := config.BasePath
+	destDir := filepath.Join("backups", basePath)
+
+	// Valida o caminho base
+	if err := validatePath(basePath); err != nil {
+		return nil, fmt.Errorf("invalid base path: %w", err)
+	}
+
+	// Realiza o backup do diretório
+	result := backupDirectory(ctx, basePath, destDir, b.Storage, false, 10)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+
+	// Cria registros de backup no banco de dados
+	for _, filePath := range result.FailedFiles {
+		if err := b.createBackupRecord(ctx, user, basePath, filePath); err != nil {
+			logrus.WithFields(logrus.Fields{
+				"file":  filePath,
+				"error": err,
+			}).Error("Failed to create backup record for failed file")
+		}
+	}
+
+	for i := 0; i < result.SuccessCount; i++ {
+		filePath := fmt.Sprintf("successful_backup_%d", i)
+		if err := b.createBackupRecord(ctx, user, basePath, filePath); err != nil {
+			logrus.WithFields(logrus.Fields{
+				"file":  filePath,
+				"error": err,
+			}).Error("Failed to create backup record for successful file")
+		}
+	}
+
+	return &result, nil
 }
 
-func (b *BackupController) validateUser(c echo.Context) (*models.User, error) {
-	user, ok := c.Get("user").(*models.User)
+func (b *BackupController) validateUser(c echo.Context) (*models.OAuthUser, error) {
+	user, ok := c.Get("user").(*models.OAuthUser)
 	if !ok {
 		return nil, errors.New("user not found in context or not of type *models.User")
 	}
@@ -249,32 +280,8 @@ func backupDirectory(ctx context.Context, basePath, destDir string, storage stor
 	}
 }
 
-// handleBackup manages the backup process for a given path
-func (b *BackupController) handleBackup(c echo.Context, basePath, destDir string) error {
-	replace := c.QueryParam("replace") == "true"
-
-	if err := validatePath(basePath); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
-	}
-
-	ctx, cancel := context.WithTimeout(c.Request().Context(), 10*time.Minute)
-	defer cancel()
-
-	result := backupDirectory(ctx, basePath, destDir, b.Storage, replace, 10)
-	if result.Error != nil {
-		logrus.WithError(result.Error).Error("Backup failed")
-		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": "Error performing backup"})
-	}
-
-	return c.JSON(http.StatusOK, map[string]interface{}{
-		"message":      "Backup completed",
-		"successCount": result.SuccessCount,
-		"failedFiles":  result.FailedFiles,
-	})
-}
-
 // createBackupRecord creates a backup record in the database
-func (b *BackupController) createBackupRecord(ctx context.Context, user *models.User, appName, filePath string) error {
+func (b *BackupController) createBackupRecord(ctx context.Context, user *models.OAuthUser, appName, filePath string) error {
 	backup := models.Backup{
 		UserID:   user.ID,
 		AppName:  appName,
@@ -303,80 +310,18 @@ func (b *BackupController) createBackupRecord(ctx context.Context, user *models.
 	return tx.Commit().Error
 }
 
-// handleAppBackup performs backup for a specific application
-func (b *BackupController) handleAppBackup(c echo.Context, appName string) error {
-	user, err := b.validateUser(c)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
-	}
-
-	appPath := c.QueryParam(appName + "_path")
-	if appPath == "" {
-		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": fmt.Sprintf("%s path not provided", appName)})
-	}
-
-	if err := validatePath(appPath); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
-	}
-
-	ctx, cancel := context.WithTimeout(c.Request().Context(), 10*time.Minute)
-	defer cancel()
-
-	result := backupDirectory(ctx, appPath, appName+"_backup", b.Storage, false, 5)
-	if result.Error != nil {
-		logrus.WithFields(logrus.Fields{
-			"appName": appName,
-			"error":   result.Error,
-		}).Error("Error backing up app")
-		return c.JSON(http.StatusInternalServerError, map[string]interface{}{"error": fmt.Sprintf("Error backing up %s", appName)})
-	}
-
-	for _, filePath := range result.FailedFiles {
-		if err := b.createBackupRecord(ctx, user, appName, filePath); err != nil {
-			logrus.WithFields(logrus.Fields{
-				"appName": appName,
-				"file":    filePath,
-				"error":   err,
-			}).Error("Failed to create backup record for failed file")
-		}
-	}
-
-	// Here we'd need a way to get paths for successful backups, which might require additional logic or passing more data
-	for i := 0; i < result.SuccessCount; i++ {
-		filePath := fmt.Sprintf("successful_backup_%d", i)
-		if err := b.createBackupRecord(ctx, user, appName, filePath); err != nil {
-			logrus.WithFields(logrus.Fields{
-				"appName": appName,
-				"file":    filePath,
-				"error":   err,
-			}).Error("Failed to create backup record for successful file")
-		}
-	}
-
-	return c.JSON(http.StatusOK, map[string]interface{}{
-		"message":      fmt.Sprintf("%s backup completed successfully", appName),
-		"successCount": result.SuccessCount,
-		"failedFiles":  result.FailedFiles,
-	})
-}
-
-func (b *BackupController) BackupGallery(c echo.Context) error {
-	// Implementação do backup da galeria
-	return c.JSON(200, map[string]string{"message": "Gallery backup successful"})
-}
-
-func (b *BackupController) BackupWhatsApp(c echo.Context) error {
-	// Implementação do backup do WhatsApp
-	return c.JSON(200, map[string]string{"message": "WhatsApp backup successful"})
-}
-
-func (b *BackupController) BackupApp(c echo.Context) error {
-	// Implementação do backup de um app específico
-	return c.JSON(200, map[string]string{"message": "App backup successful"})
-}
-
-// Placeholder function for storing encryption key securely
+// storeEncryptionKey stores the encryption key securely in the database
 func storeEncryptionKey(ctx context.Context, key, filePath string) error {
-	// Implement the logic to securely store the encryption key here
+	encryptionKeyRecord := models.EncryptionKey{
+		FilePath:  filePath,
+		Key:       key,
+		CreatedAt: time.Now(),
+	}
+
+	// Salva a chave no banco de dados
+	if err := repositories.DBConnection.WithContext(ctx).Create(&encryptionKeyRecord).Error; err != nil {
+		return fmt.Errorf("failed to store encryption key: %w", err)
+	}
+
 	return nil
 }

@@ -1,59 +1,131 @@
 package controllers
 
 import (
+	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/dgrijalva/jwt-go"
 	"github.com/labstack/echo/v4"
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
 )
 
-var jwtSecret = []byte("your_secret_key")
-
-// LoginController handles user login and returns a JWT.
-func LoginController(c echo.Context) error {
-	type LoginRequest struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
+var (
+	jwtSecret = []byte(os.Getenv("JWT_SECRET")) // Chave secreta para assinar o JWT
+	oauthConf = &oauth2.Config{
+		ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),     // Client ID do Google
+		ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"), // Client Secret do Google
+		RedirectURL:  os.Getenv("OAUTH_REDIRECT_URL"),   // URL de redirecionamento
+		Scopes: []string{
+			"https://www.googleapis.com/auth/userinfo.email",
+			"https://www.googleapis.com/auth/userinfo.profile",
+		},
+		Endpoint: google.Endpoint,
 	}
+	stateTokens = make(map[string]bool) // Para armazenar e validar tokens de estado
+)
 
-	var req LoginRequest
-	if err := c.Bind(&req); err != nil {
+// OAuthLogin redireciona o usuário para a página de autenticação do Google
+func OAuthLogin(c echo.Context) error {
+	state := generateStateToken()
+	url := oauthConf.AuthCodeURL(state, oauth2.AccessTypeOffline)
+	return c.Redirect(http.StatusTemporaryRedirect, url)
+}
+
+// OAuthCallback lida com a resposta do Google após a autenticação
+func OAuthCallback(c echo.Context) error {
+	// Valida o token de estado
+	state := c.QueryParam("state")
+	if !stateTokens[state] {
 		return c.JSON(http.StatusBadRequest, echo.Map{
-			"error": "invalid request payload",
+			"error": "invalid state token",
+		})
+	}
+	delete(stateTokens, state) // Remove o token de estado após o uso
+
+	// Obtém o código de autorização
+	code := c.QueryParam("code")
+	if code == "" {
+		return c.JSON(http.StatusBadRequest, echo.Map{
+			"error": "authorization code not provided",
 		})
 	}
 
-	if !authenticateUser(req.Email, req.Password) {
-		return c.JSON(http.StatusUnauthorized, echo.Map{
-			"error": "invalid email or password",
-		})
-	}
-
-	token, err := generateJWT(req.Email)
+	// Troca o código por um token de acesso
+	token, err := oauthConf.Exchange(context.Background(), code)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, echo.Map{
-			"error": "failed to generate token",
+			"error": "failed to exchange authorization code",
 		})
 	}
 
+	// Obtém as informações do usuário
+	userInfo, err := getUserInfo(token)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, echo.Map{
+			"error": "failed to retrieve user information",
+		})
+	}
+
+	// Gera um JWT para o usuário
+	jwtToken, err := generateJWT(userInfo["email"].(string))
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, echo.Map{
+			"error": "failed to generate JWT",
+		})
+	}
+
+	// Retorna o JWT para o cliente
 	return c.JSON(http.StatusOK, echo.Map{
-		"token": token,
+		"token": jwtToken,
+		"user":  userInfo,
 	})
 }
 
-// authenticateUser is a mock function to validate email and password.
-func authenticateUser(email, password string) bool {
-	// Replace with real authentication logic.
-	return email == "test@example.com" && password == "password123"
+// generateStateToken gera um token de estado seguro
+func generateStateToken() string {
+	b := make([]byte, 32)
+	_, err := rand.Read(b)
+	if err != nil {
+		return ""
+	}
+	token := base64.StdEncoding.EncodeToString(b)
+	stateTokens[token] = true
+	return token
 }
 
-// generateJWT creates a JWT for the given email.
+// getUserInfo obtém as informações do usuário a partir do token de acesso
+func getUserInfo(token *oauth2.Token) (map[string]interface{}, error) {
+	client := oauthConf.Client(context.Background(), token)
+	resp, err := client.Get("https://www.googleapis.com/oauth2/v3/userinfo")
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch user info: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to fetch user info: status %d", resp.StatusCode)
+	}
+
+	var userInfo map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&userInfo); err != nil {
+		return nil, fmt.Errorf("failed to decode user info: %w", err)
+	}
+
+	return userInfo, nil
+}
+
+// generateJWT cria um JWT para o email do usuário
 func generateJWT(email string) (string, error) {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"email": email,
-		"exp":   jwt.TimeFunc().Add(24 * time.Hour).Unix(),
+		"exp":   time.Now().Add(24 * time.Hour).Unix(),
 	})
 
 	signedToken, err := token.SignedString(jwtSecret)

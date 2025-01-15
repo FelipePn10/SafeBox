@@ -13,7 +13,7 @@ import (
 
 type AuthConfig struct {
 	RequireToken      bool
-	RequirePermission []models.Permission
+	RequirePermission []string // Usamos strings para as permissões
 }
 
 type UserPlanConfig struct {
@@ -42,7 +42,7 @@ func (am *AuthMiddleware) RequireAuth() echo.MiddlewareFunc {
 	})
 }
 
-func (am *AuthMiddleware) RequirePermissions(permissions ...models.Permission) echo.MiddlewareFunc {
+func (am *AuthMiddleware) RequirePermissions(permissions ...string) echo.MiddlewareFunc {
 	return am.WithConfig(AuthConfig{
 		RequireToken:      true,
 		RequirePermission: permissions,
@@ -85,7 +85,7 @@ func (am *AuthMiddleware) WithConfig(config AuthConfig) echo.MiddlewareFunc {
 func CheckUserPlan() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
-			user, ok := c.Get("user").(*models.User)
+			user, ok := c.Get("user").(*models.OAuthUser)
 			if !ok {
 				return echo.NewHTTPError(http.StatusInternalServerError, "Usuário não encontrado no contexto")
 			}
@@ -104,16 +104,25 @@ func extractToken(c echo.Context) string {
 	return strings.TrimPrefix(token, "Bearer ")
 }
 
-func validatePermissions(user *models.User, requiredPermissions []models.Permission) error {
+// Função para validar permissões
+func validatePermissions(user *models.OAuthUser, requiredPermissions []string) error {
+	// Converte as permissões do usuário para um slice de strings
+	userPermissions := make([]string, len(user.Permissions))
+	for i, p := range user.Permissions {
+		userPermissions[i] = p.Name
+	}
+
+	// Verifica se o usuário tem todas as permissões necessárias
 	for _, required := range requiredPermissions {
-		if !hasPermission(user.Permissions, required) {
-			return echo.NewHTTPError(http.StatusForbidden, "Permissão negada")
+		if !hasPermission(userPermissions, required) {
+			return echo.NewHTTPError(http.StatusForbidden, "Permissão negada: "+required)
 		}
 	}
 	return nil
 }
 
-func hasPermission(permissions []models.Permission, target models.Permission) bool {
+// Função auxiliar para verificar se uma permissão está presente
+func hasPermission(permissions []string, target string) bool {
 	for _, permission := range permissions {
 		if permission == target {
 			return true

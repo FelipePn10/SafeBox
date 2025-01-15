@@ -115,7 +115,7 @@ func OAuthCallback(c echo.Context) error {
 	}
 
 	oauthUser := models.OAuthUser{
-		ID:       parseUserID(fmt.Sprintf("%v", userInfo["sub"])),
+		Provider: "google",
 		Email:    fmt.Sprintf("%v", userInfo["email"]),
 		Username: fmt.Sprintf("%v", userInfo["name"]),
 		Avatar:   fmt.Sprintf("%v", userInfo["picture"]),

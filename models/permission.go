@@ -9,10 +9,10 @@ const (
 	WRITE            Permission = "write"
 	DELETE           Permission = "delete"
 	ADMIN            Permission = "admin"
-	PermissionBackup            = "backup"
+	PermissionBackup Permission = "backup"
 )
 
 type PermissionModel struct {
 	gorm.Model
-	Name string `json:"name" gorm:"unique"`
+	Name string `gorm:"unique;not null"`
 }
