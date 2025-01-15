@@ -1,14 +1,34 @@
 package utils
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/golang-jwt/jwt/v4"
+	"github.com/joho/godotenv"
 	"github.com/sirupsen/logrus"
 )
 
-var jwtSecret = []byte("your-secret-key")
+var jwtSecret []byte
+
+// init carrega a chave secreta do arquivo .env
+func init() {
+	// Carrega as variáveis de ambiente do arquivo .env
+	if err := godotenv.Load(); err != nil {
+		logrus.Fatal("Erro ao carregar o arquivo .env")
+	}
+
+	// Obtém a chave secreta do ambiente
+	secret := os.Getenv("JWT_SECRET")
+	if secret == "" {
+		logrus.Fatal("JWT_SECRET não encontrado no arquivo .env")
+	}
+
+	jwtSecret = []byte(secret)
+}
 
 // Claims define os dados do token JWT
 type Claims struct {
@@ -16,19 +36,22 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
+// Tokens structure for grouping Access and Refresh Tokens
+type Tokens struct {
+	AccessToken  string `json:"access_token"`  // Token de acesso
+	RefreshToken string `json:"refresh_token"` // Token de refresh
+}
+
 // GenerateOAuthToken generates an access token and a refresh token
-func GenerateOAuthToken(username string) (*Tokens, error) {
-	logrus.Infof("Gerando tokens OAuth para o usuário: %s", username)
-	// Generate Access Token
-	accessToken, err := generateJWT(username, 15*time.Minute) // Valid for 15 minutes
+func GenerateOAuthToken(ctx context.Context, username string) (*Tokens, error) {
+	accessToken, err := generateJWT(ctx, username, 15*time.Minute)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("erro ao gerar Access Token: %w", err)
 	}
 
-	// Gerar Refresh Token
-	refreshToken, err := generateJWT(username, 7*24*time.Hour) // Valid for 7 days
+	refreshToken, err := generateJWT(ctx, username, 7*24*time.Hour)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("erro ao gerar Refresh Token: %w", err)
 	}
 
 	return &Tokens{
@@ -38,31 +61,23 @@ func GenerateOAuthToken(username string) (*Tokens, error) {
 }
 
 // ValidateOAuthToken validates a JWT token and returns user data
-func ValidateOAuthToken(tokenString string) (*Claims, error) {
-	logrus.Info("Validando token OAuth")
+func ValidateOAuthToken(ctx context.Context, tokenString string) (*Claims, error) {
 	claims := &Claims{}
-
 	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+			return nil, fmt.Errorf("método de assinatura inesperado: %v", token.Header["alg"])
 		}
 		return jwtSecret, nil
 	})
 
-	if err != nil {
-		return nil, err
-	}
-
-	if !token.Valid {
-		return nil, fmt.Errorf("invalid token")
+	if err != nil || !token.Valid || claims.Username == "" {
+		return nil, errors.New("token inválido ou usuário não encontrado")
 	}
 
 	return claims, nil
 }
 
-// generateJWT creates a JWT token with expiration time
-func generateJWT(username string, duration time.Duration) (string, error) {
-	logrus.Infof("Gerando JWT para o usuário: %s com duração: %v", username, duration)
+func generateJWT(ctx context.Context, username string, duration time.Duration) (string, error) {
 	claims := &Claims{
 		Username: username,
 		RegisteredClaims: jwt.RegisteredClaims{
@@ -73,10 +88,4 @@ func generateJWT(username string, duration time.Duration) (string, error) {
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString(jwtSecret)
-}
-
-// Tokens structure for grouping Access and Refresh Tokens
-type Tokens struct {
-	AccessToken  string
-	RefreshToken string
 }

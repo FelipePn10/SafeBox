@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: admin
       POSTGRES_DB: safeboxdb
     ports:
-      - "5432:5432"
+      - "5432:5432" # Mapeia a porta 5433 do host para a porta 5432 do contêiner
 
   safebox:
     build: .

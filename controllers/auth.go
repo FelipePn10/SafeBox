@@ -44,7 +44,8 @@ func (c *AuthController) Login(ctx echo.Context) error {
 		return ctx.JSON(http.StatusUnauthorized, map[string]string{"error": "Invalid credentials"})
 	}
 
-	token, err := utils.GenerateOAuthToken(user.Username)
+	// Passa o contexto para GenerateOAuthToken
+	token, err := utils.GenerateOAuthToken(ctx.Request().Context(), user.Username)
 	if err != nil {
 		return ctx.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to generate token"})
 	}

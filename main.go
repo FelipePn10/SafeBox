@@ -1,7 +1,6 @@
 package main
 
 import (
-	"SafeBox/middlewares"
 	"SafeBox/models"
 	"SafeBox/repositories"
 	"SafeBox/routes"
@@ -15,40 +14,33 @@ import (
 )
 
 func main() {
-	// Carrega variáveis de ambiente do arquivo .env
 	if err := godotenv.Load(); err != nil {
 		log.Fatalf("Error loading .env file: %v", err)
 	}
 
-	// Configuração do banco de dados PostgreSQL
 	dsn := buildDatabaseDSN()
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 
-	// Migrações
 	db.AutoMigrate(&models.User{}, &models.Backup{}, &models.BackupHistory{}, &models.TempTwoFASecret{})
 
-	// Repositórios
 	userRepo := repositories.NewUserRepository(db)
 	backupRepo := repositories.NewBackupRepository(db)
-	twoFactorRepo := repositories.NewTwoFactorRepository(db)
 
-	//middlewares
-	authMiddleware := middlewares.NewAuthMiddleware(authService.TokenValidator, userRepo)
-
-	// Serviços
 	authService := services.NewAuthService(userRepo)
 	backupService := services.NewBackupService(backupRepo)
-	twoFactorService := services.NewTwoFactorService(twoFactorRepo)
+	e, err := routes.NewRouteConfig(authService, backupService, *userRepo)
+	if err != nil {
+		log.Fatalf("Failed to configure routes: %v", err)
+	}
 
-	// Configuração do Echo e registro das rotas
-	e := routes.NewRouteConfig(authService, backupService, twoFactorService)
-	e.Start(":" + os.Getenv("PORT"))
+	if err := e.Start(":" + os.Getenv("PORT")); err != nil {
+		log.Fatalf("Failed to start server: %v", err)
+	}
 }
 
-// buildDatabaseDSN constrói a string de conexão do PostgreSQL a partir das variáveis de ambiente
 func buildDatabaseDSN() string {
 	host := os.Getenv("DB_HOST")
 	port := os.Getenv("DB_PORT")

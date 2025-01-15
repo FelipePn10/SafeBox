@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 
@@ -173,4 +174,20 @@ func (s *R2Storage) Exists(filePath string) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+func (c R2Config) Validate() error {
+	if c.AccountID == "" {
+		return fmt.Errorf("account ID is required")
+	}
+	if c.AccessKeyID == "" {
+		return fmt.Errorf("access key ID is required")
+	}
+	if c.SecretAccessKey == "" {
+		return fmt.Errorf("secret access key is required")
+	}
+	if c.Bucket == "" {
+		return fmt.Errorf("bucket name is required")
+	}
+	return nil
 }

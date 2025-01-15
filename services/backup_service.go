@@ -34,6 +34,9 @@ func (s *BackupService) Upload(file io.Reader, filename string) (string, error) 
 func NewBackupService(backupRepo *repositories.BackupRepository) *BackupService {
 	return &BackupService{backupRepo: backupRepo}
 }
+func (s *BackupService) GetBackupRepo() *repositories.BackupRepository {
+	return s.backupRepo
+}
 
 func (s *BackupService) CreateBackup(backup *models.Backup) error {
 	return s.backupRepo.CreateBackup(backup)

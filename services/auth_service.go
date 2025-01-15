@@ -3,8 +3,8 @@ package services
 import (
 	"SafeBox/models"
 	"SafeBox/repositories"
-
-	"golang.org/x/crypto/bcrypt"
+	"SafeBox/utils"
+	"errors"
 )
 
 type AuthService struct {
@@ -16,12 +16,7 @@ func NewAuthService(userRepo *repositories.UserRepository) *AuthService {
 }
 
 func (s *AuthService) Register(user *models.User) error {
-	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(user.Password), bcrypt.DefaultCost)
-	if err != nil {
-		return err
-	}
-	user.Password = string(hashedPassword)
-	return s.userRepo.Create(user)
+	return s.userRepo.CreateUser(user)
 }
 
 func (s *AuthService) Login(username, password string) (*models.User, error) {
@@ -30,9 +25,13 @@ func (s *AuthService) Login(username, password string) (*models.User, error) {
 		return nil, err
 	}
 
-	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(password)); err != nil {
-		return nil, err
+	if err := utils.ComparePassword(user.Password, password); err != nil {
+		return nil, errors.New("invalid credentials")
 	}
 
 	return user, nil
+}
+
+func (s *AuthService) ValidateToken(token string) (*utils.TokenClaims, error) {
+	return utils.ValidateToken(token)
 }

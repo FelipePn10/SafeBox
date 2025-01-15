@@ -21,19 +21,97 @@ import (
 	"SafeBox/utils"
 )
 
-// BackupResult holds the results of a backup operation
 type BackupResult struct {
 	SuccessCount int
 	FailedFiles  []string
 	Error        error
 }
 
-type BackupController struct {
-	Storage storage.Storage
+const (
+	maxFileSize      = 25 * 1024 * 1024 * 1024 // 25 GB
+	maxBackupsPerDay = 10
+)
+
+type BackupConfig struct {
+	AllowedExtensions []string
+	MaxFileSize       int64
+	BasePath          string
 }
 
-func NewBackupController(storage storage.Storage) *BackupController {
-	return &BackupController{Storage: storage}
+type BackupController struct {
+	Storage    storage.Storage
+	backupRepo *repositories.BackupRepository
+}
+
+func NewBackupController(storage storage.Storage, backupRepo *repositories.BackupRepository) *BackupController {
+	return &BackupController{
+		Storage:    storage,
+		backupRepo: backupRepo,
+	}
+}
+
+func (b *BackupController) Backup(c echo.Context) error {
+	user, err := b.validateUser(c)
+	if err != nil {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+	}
+
+	count, err := b.backupRepo.CountUserBackupsToday(user.ID)
+	if err != nil {
+		logrus.WithError(err).Error("Failed to count user backups")
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal error"})
+	}
+	if count >= maxBackupsPerDay {
+		return c.JSON(http.StatusTooManyRequests, map[string]string{"error": "daily backup limit exceeded"})
+	}
+
+	backupType := c.QueryParam("type")
+	config, err := b.getBackupConfig(backupType)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+
+	result, err := b.processBackup(c.Request().Context(), user, config)
+	if err != nil {
+		logrus.WithError(err).Error("Backup failed")
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "backup failed"})
+	}
+
+	return c.JSON(http.StatusOK, result)
+}
+
+func (b *BackupController) getBackupConfig(backupType string) (*BackupConfig, error) {
+	switch backupType {
+	case "gallery":
+		return &BackupConfig{
+			AllowedExtensions: []string{".jpg", ".jpeg", ".png", ".gif"},
+			MaxFileSize:       maxFileSize,
+			BasePath:          "gallery",
+		}, nil
+	case "documents":
+		return &BackupConfig{
+			AllowedExtensions: []string{".pdf", ".doc", ".docx", ".txt"},
+			MaxFileSize:       maxFileSize,
+			BasePath:          "documents",
+		}, nil
+	default:
+		return nil, fmt.Errorf("unsupported backup type: %s", backupType)
+	}
+}
+
+func (b *BackupController) processBackup(ctx context.Context, user *models.User, config *BackupConfig) (*BackupResult, error) {
+	return &BackupResult{
+		SuccessCount: 0,
+		FailedFiles:  nil,
+	}, nil
+}
+
+func (b *BackupController) validateUser(c echo.Context) (*models.User, error) {
+	user, ok := c.Get("user").(*models.User)
+	if !ok {
+		return nil, errors.New("user not found in context or not of type *models.User")
+	}
+	return user, nil
 }
 
 // validatePath checks if the given path is valid and accessible
@@ -223,15 +301,6 @@ func (b *BackupController) createBackupRecord(ctx context.Context, user *models.
 	}
 
 	return tx.Commit().Error
-}
-
-// validateUser checks if a user is present in the context
-func (b *BackupController) validateUser(c echo.Context) (*models.User, error) {
-	user, ok := c.Get("user").(*models.User)
-	if !ok {
-		return nil, errors.New("user not found in context or not of type *models.User")
-	}
-	return user, nil
 }
 
 // handleAppBackup performs backup for a specific application

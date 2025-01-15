@@ -14,19 +14,14 @@ func NewUserRepository(db *gorm.DB) *UserRepository {
 	return &UserRepository{db: db}
 }
 
-// Create insere um novo usuário no banco de dados
-func (r *UserRepository) Create(user *models.User) error {
+func (r *UserRepository) CreateUser(user *models.User) error {
 	return r.db.Create(user).Error
 }
 
-// FindByUsername busca um usuário pelo nome de usuário
-func (r UserRepository) FindByUsername(username string) (*models.User, error) {
+func (r *UserRepository) FindByUsername(username string) (*models.User, error) {
 	var user models.User
-	result := r.db.Where("username = ?", username).First(&user)
-	if result.Error != nil {
-		return nil, result.Error
-	}
-	return &user, nil
+	err := r.db.Where("username = ?", username).First(&user).Error
+	return &user, err
 }
 
 // Update atualiza um usuário no banco de dados

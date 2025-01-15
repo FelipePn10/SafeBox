@@ -1,17 +1,15 @@
-// Package utils provides utilities for handling Two-Factor Authentication (2FA)
 package utils
 
 import (
-	"crypto/rand"
-	"encoding/base32"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/golang-jwt/jwt/v4"
 	"github.com/pquerna/otp"
 	"github.com/pquerna/otp/totp"
 )
 
-// Algorithm representa os algoritmos suportados para 2FA
 type Algorithm string
 
 const (
@@ -20,7 +18,6 @@ const (
 	AlgorithmSHA512 Algorithm = "SHA512"
 )
 
-// Errors
 var (
 	ErrInvalidAlgorithm = fmt.Errorf("algoritmo inválido")
 	ErrInvalidSecret    = fmt.Errorf("segredo inválido")
@@ -49,17 +46,21 @@ type TokenClaims struct {
 	IssuedAt       time.Time `json:"iat"`
 	ID             string    `json:"jti"`
 }
-
-// TwoFactorConfig define a configuração para gerar segredos 2FA
 type TwoFactorConfig struct {
-	Issuer         string     // Nome do emissor que aparecerá no app autenticador
-	SecretSize     int        // Tamanho do segredo em bytes
-	ValidityPeriod uint       // Período de validade do código em segundos
-	Digits         otp.Digits // Número de dígitos no código
-	Algorithm      Algorithm  // Algoritmo de hash utilizado
+	Issuer         string
+	SecretSize     int
+	ValidityPeriod uint
+	Digits         otp.Digits
+	Algorithm      Algorithm
 }
 
-// DefaultTwoFactorConfig retorna a configuração padrão para 2FA
+func (c *TokenClaims) Valid() error {
+	if time.Now().After(c.ExpirationTime) {
+		return errors.New("token expirado")
+	}
+	return nil
+}
+
 func DefaultTwoFactorConfig() TwoFactorConfig {
 	return TwoFactorConfig{
 		Issuer:         "SafeBox",
@@ -70,63 +71,6 @@ func DefaultTwoFactorConfig() TwoFactorConfig {
 	}
 }
 
-// Generate2FASecret gera um segredo 2FA e uma URL para o QR Code
-func Generate2FASecret(email string, config TwoFactorConfig) (secret, url string, err error) {
-	if email == "" {
-		return "", "", fmt.Errorf("email não pode estar vazio")
-	}
-
-	// Validar configuração
-	if config.SecretSize < 16 {
-		return "", "", fmt.Errorf("tamanho do segredo deve ser pelo menos 16 bytes")
-	}
-
-	// Gerar bytes aleatórios seguros
-	bytes := make([]byte, config.SecretSize)
-	if _, err := rand.Read(bytes); err != nil {
-		return "", "", fmt.Errorf("erro ao gerar bytes aleatórios: %w", err)
-	}
-
-	secret = base32.StdEncoding.EncodeToString(bytes)
-
-	// Converter algoritmo
-	algorithm, err := config.Algorithm.toOTPAlgorithm()
-	if err != nil {
-		return "", "", err
-	}
-
-	// Gerar chave TOTP
-	key, err := totp.Generate(totp.GenerateOpts{
-		Issuer:      config.Issuer,
-		AccountName: email,
-		Secret:      []byte(secret),
-		Period:      config.ValidityPeriod,
-		Digits:      config.Digits,
-		Algorithm:   algorithm,
-	})
-	if err != nil {
-		return "", "", fmt.Errorf("erro ao gerar chave TOTP: %w", err)
-	}
-
-	return secret, key.URL(), nil
-}
-
-// VerifyTwoFactorCode verifica se o código 2FA é válido
-func VerifyTwoFactorCode(secret, code string) (bool, error) {
-	return totp.ValidateCustom(
-		code,
-		secret,
-		time.Now().UTC(),
-		totp.ValidateOpts{
-			Period:    30,
-			Skew:      1,
-			Digits:    6,
-			Algorithm: otp.AlgorithmSHA1,
-		},
-	)
-}
-
-// ValidateWithTimeWindow verifica o código 2FA com uma janela de tempo personalizada
 func ValidateWithTimeWindow(code, secret string, window int, config TwoFactorConfig) (bool, error) {
 	if code == "" || secret == "" {
 		return false, ErrInvalidCode
@@ -149,4 +93,19 @@ func ValidateWithTimeWindow(code, secret string, window int, config TwoFactorCon
 	}
 
 	return totp.ValidateCustom(code, secret, time.Now(), opts)
+}
+
+func ValidateToken(tokenString string) (*TokenClaims, error) {
+	token, err := jwt.ParseWithClaims(tokenString, &TokenClaims{}, func(token *jwt.Token) (interface{}, error) {
+		return jwtSecret, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if claims, ok := token.Claims.(*TokenClaims); ok && token.Valid {
+		return claims, nil
+	}
+
+	return nil, errors.New("invalid token")
 }

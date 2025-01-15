@@ -1,4 +1,3 @@
-// middlewares/middleware.go
 package middlewares
 
 import (
@@ -12,30 +11,24 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-// AuthConfig define as configurações para o middleware de autenticação
 type AuthConfig struct {
 	RequireToken      bool
-	Require2FA        bool
 	RequirePermission []models.Permission
 }
 
-// UserPlanConfig define as configurações para verificação do plano do usuário
 type UserPlanConfig struct {
 	AllowedPlans []string
 }
 
-// TokenValidator interface para validação de tokens
 type TokenValidator interface {
 	ValidateToken(token string) (*utils.TokenClaims, error)
 }
 
-// AuthMiddleware implementa as funções de autenticação
 type AuthMiddleware struct {
 	tokenValidator TokenValidator
 	userRepo       repositories.UserRepository
 }
 
-// NewAuthMiddleware cria uma nova instância do middleware de autenticação
 func NewAuthMiddleware(validator TokenValidator, userRepo repositories.UserRepository) *AuthMiddleware {
 	return &AuthMiddleware{
 		tokenValidator: validator,
@@ -43,22 +36,12 @@ func NewAuthMiddleware(validator TokenValidator, userRepo repositories.UserRepos
 	}
 }
 
-// RequireAuth retorna um middleware que requer apenas autenticação
 func (am *AuthMiddleware) RequireAuth() echo.MiddlewareFunc {
 	return am.WithConfig(AuthConfig{
 		RequireToken: true,
 	})
 }
 
-// RequireAuthWith2FA retorna um middleware que requer autenticação e 2FA
-func (am *AuthMiddleware) RequireAuthWith2FA() echo.MiddlewareFunc {
-	return am.WithConfig(AuthConfig{
-		RequireToken: true,
-		Require2FA:   true,
-	})
-}
-
-// RequirePermissions retorna um middleware que requer autenticação e permissões específicas
 func (am *AuthMiddleware) RequirePermissions(permissions ...models.Permission) echo.MiddlewareFunc {
 	return am.WithConfig(AuthConfig{
 		RequireToken:      true,
@@ -66,7 +49,6 @@ func (am *AuthMiddleware) RequirePermissions(permissions ...models.Permission) e
 	})
 }
 
-// WithConfig retorna um middleware com configurações personalizadas
 func (am *AuthMiddleware) WithConfig(config AuthConfig) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
@@ -88,12 +70,6 @@ func (am *AuthMiddleware) WithConfig(config AuthConfig) echo.MiddlewareFunc {
 
 				c.Set("user", user)
 
-				if config.Require2FA {
-					if err := validate2FA(c, user); err != nil {
-						return err
-					}
-				}
-
 				if len(config.RequirePermission) > 0 {
 					if err := validatePermissions(user, config.RequirePermission); err != nil {
 						return err
@@ -106,7 +82,6 @@ func (am *AuthMiddleware) WithConfig(config AuthConfig) echo.MiddlewareFunc {
 	}
 }
 
-// CheckUserPlan verifica o plano e limites de armazenamento do usuário
 func CheckUserPlan() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
@@ -124,27 +99,9 @@ func CheckUserPlan() echo.MiddlewareFunc {
 	}
 }
 
-// Funções auxiliares privadas
 func extractToken(c echo.Context) string {
 	token := c.Request().Header.Get("Authorization")
 	return strings.TrimPrefix(token, "Bearer ")
-}
-
-func validate2FA(c echo.Context, user *models.User) error {
-	code := c.Request().Header.Get("X-2FA-Code")
-	if code == "" {
-		return echo.NewHTTPError(http.StatusForbidden, "Código 2FA necessário")
-	}
-
-	isValid, err := utils.VerifyTwoFactorCode(user.TwoFASecret, code)
-	if err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Erro na validação 2FA: %v", err))
-	}
-	if !isValid {
-		return echo.NewHTTPError(http.StatusForbidden, "Código 2FA inválido")
-	}
-
-	return nil
 }
 
 func validatePermissions(user *models.User, requiredPermissions []models.Permission) error {
