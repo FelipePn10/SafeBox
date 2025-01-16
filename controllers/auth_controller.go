@@ -1,3 +1,4 @@
+// controllers/auth_controller.go
 package controllers
 
 import (
@@ -10,108 +11,161 @@ import (
 	"os"
 	"time"
 
-	"github.com/dgrijalva/jwt-go"
+	"SafeBox/models"
+	"SafeBox/repositories"
+	"SafeBox/utils"
+
 	"github.com/labstack/echo/v4"
+	"github.com/sirupsen/logrus"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 )
 
-var (
-	jwtSecret = []byte(os.Getenv("JWT_SECRET")) // Chave secreta para assinar o JWT
-	oauthConf = &oauth2.Config{
-		ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),     // Client ID do Google
-		ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"), // Client Secret do Google
-		RedirectURL:  os.Getenv("OAUTH_REDIRECT_URL"),   // URL de redirecionamento
+type OAuthController struct {
+	config      *oauth2.Config
+	stateTokens map[string]bool
+	userRepo    repositories.UserRepository // Changed from *repositories.UserRepository
+}
+
+// NewOAuthController creates a new instance of OAuthController
+func NewOAuthController(userRepo repositories.UserRepository) (*OAuthController, error) {
+	clientID := os.Getenv("GOOGLE_CLIENT_ID")
+	clientSecret := os.Getenv("GOOGLE_CLIENT_SECRET")
+	redirectURL := os.Getenv("OAUTH_REDIRECT_URL")
+
+	if clientID == "" || clientSecret == "" || redirectURL == "" {
+		return nil, fmt.Errorf("missing required OAuth configuration")
+	}
+
+	config := &oauth2.Config{
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+		RedirectURL:  redirectURL,
 		Scopes: []string{
 			"https://www.googleapis.com/auth/userinfo.email",
 			"https://www.googleapis.com/auth/userinfo.profile",
 		},
 		Endpoint: google.Endpoint,
 	}
-	stateTokens = make(map[string]bool) // Para armazenar e validar tokens de estado
-)
 
-// OAuthLogin redireciona o usuário para a página de autenticação do Google
-func OAuthLogin(c echo.Context) error {
-	state := generateStateToken()
-	url := oauthConf.AuthCodeURL(state, oauth2.AccessTypeOffline)
-	return c.Redirect(http.StatusTemporaryRedirect, url)
+	return &OAuthController{
+		config:      config,
+		stateTokens: make(map[string]bool),
+		userRepo:    userRepo,
+	}, nil
 }
 
-// OAuthCallback lida com a resposta do Google após a autenticação
-func OAuthCallback(c echo.Context) error {
-	// Valida o token de estado
-	state := c.QueryParam("state")
-	if !stateTokens[state] {
-		return c.JSON(http.StatusBadRequest, echo.Map{
-			"error": "invalid state token",
+// generateStateToken creates a secure random state token for OAuth flow
+func (c *OAuthController) generateStateToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("failed to generate random bytes: %w", err)
+	}
+	token := base64.URLEncoding.EncodeToString(b)
+	c.stateTokens[token] = true
+
+	// Clean up old tokens after 5 minutes
+	go func() {
+		time.Sleep(5 * time.Minute)
+		delete(c.stateTokens, token)
+	}()
+
+	return token, nil
+}
+
+// HandleLogin initiates the OAuth login process
+func (c *OAuthController) HandleLogin(ctx echo.Context) error {
+	state, err := c.generateStateToken()
+	if err != nil {
+		return ctx.JSON(http.StatusInternalServerError, map[string]string{
+			"error": "Failed to generate state token",
 		})
 	}
-	delete(stateTokens, state) // Remove o token de estado após o uso
 
-	// Obtém o código de autorização
-	code := c.QueryParam("code")
+	url := c.config.AuthCodeURL(state)
+	return ctx.Redirect(http.StatusTemporaryRedirect, url)
+}
+
+// HandleCallback processes the OAuth callback
+func (c *OAuthController) HandleCallback(ctx echo.Context) error {
+	logger := logrus.WithFields(logrus.Fields{
+		"handler": "HandleCallback",
+		"method":  "OAuth2",
+	})
+
+	state := ctx.QueryParam("state")
+	if !c.stateTokens[state] {
+		logger.Warn("Invalid state token received")
+		return ctx.JSON(http.StatusBadRequest, map[string]string{
+			"error": "Invalid state token",
+		})
+	}
+	delete(c.stateTokens, state)
+
+	code := ctx.QueryParam("code")
 	if code == "" {
-		return c.JSON(http.StatusBadRequest, echo.Map{
-			"error": "authorization code not provided",
+		logger.Warn("No authorization code received")
+		return ctx.JSON(http.StatusBadRequest, map[string]string{
+			"error": "Authorization code not provided",
 		})
 	}
 
-	// Troca o código por um token de acesso
-	token, err := oauthConf.Exchange(context.Background(), code)
+	token, err := c.config.Exchange(context.Background(), code)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, echo.Map{
-			"error": "failed to exchange authorization code",
+		logger.WithError(err).Error("Failed to exchange authorization code")
+		return ctx.JSON(http.StatusInternalServerError, map[string]string{
+			"error": "Failed to authenticate with provider",
 		})
 	}
 
-	// Obtém as informações do usuário
-	userInfo, err := getUserInfo(token)
+	userInfo, err := c.getUserInfo(token)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, echo.Map{
-			"error": "failed to retrieve user information",
+		logger.WithError(err).Error("Failed to get user info")
+		return ctx.JSON(http.StatusInternalServerError, map[string]string{
+			"error": "Failed to get user information",
 		})
 	}
 
-	// Gera um JWT para o usuário
-	jwtToken, err := generateJWT(userInfo["email"].(string))
+	user := &models.OAuthUser{
+		Email:        userInfo["email"].(string),
+		Username:     userInfo["name"].(string),
+		Avatar:       userInfo["picture"].(string),
+		Provider:     "google",
+		StorageLimit: 5 * 1024 * 1024 * 1024, // 5GB default limit
+		Plan:         "free",
+	}
+
+	if err := c.userRepo.CreateOrUpdate(user); err != nil {
+		logger.WithError(err).Error("Failed to create/update user")
+		return ctx.JSON(http.StatusInternalServerError, map[string]string{
+			"error": "Failed to process user data",
+		})
+	}
+
+	// Generate tokens using the utility function
+	tokens, err := utils.GenerateOAuthToken(ctx.Request().Context(), user.Username)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, echo.Map{
-			"error": "failed to generate JWT",
+		logger.WithError(err).Error("Failed to generate tokens")
+		return ctx.JSON(http.StatusInternalServerError, map[string]string{
+			"error": "Failed to generate authentication tokens",
 		})
 	}
 
-	// Retorna o JWT para o cliente
-	return c.JSON(http.StatusOK, echo.Map{
-		"token": jwtToken,
-		"user":  userInfo,
+	return ctx.JSON(http.StatusOK, map[string]interface{}{
+		"access_token":  tokens.AccessToken,
+		"refresh_token": tokens.RefreshToken,
+		"user":          user,
 	})
 }
 
-// generateStateToken gera um token de estado seguro
-func generateStateToken() string {
-	b := make([]byte, 32)
-	_, err := rand.Read(b)
-	if err != nil {
-		return ""
-	}
-	token := base64.StdEncoding.EncodeToString(b)
-	stateTokens[token] = true
-	return token
-}
-
-// getUserInfo obtém as informações do usuário a partir do token de acesso
-func getUserInfo(token *oauth2.Token) (map[string]interface{}, error) {
-	client := oauthConf.Client(context.Background(), token)
+// getUserInfo fetches the user information from Google's userinfo endpoint
+func (c *OAuthController) getUserInfo(token *oauth2.Token) (map[string]interface{}, error) {
+	client := c.config.Client(context.Background(), token)
 	resp, err := client.Get("https://www.googleapis.com/oauth2/v3/userinfo")
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch user info: %w", err)
+		return nil, fmt.Errorf("failed to get user info: %w", err)
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to fetch user info: status %d", resp.StatusCode)
-	}
 
 	var userInfo map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&userInfo); err != nil {
@@ -119,19 +173,4 @@ func getUserInfo(token *oauth2.Token) (map[string]interface{}, error) {
 	}
 
 	return userInfo, nil
-}
-
-// generateJWT cria um JWT para o email do usuário
-func generateJWT(email string) (string, error) {
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"email": email,
-		"exp":   time.Now().Add(24 * time.Hour).Unix(),
-	})
-
-	signedToken, err := token.SignedString(jwtSecret)
-	if err != nil {
-		return "", fmt.Errorf("failed to sign token: %w", err)
-	}
-
-	return signedToken, nil
 }

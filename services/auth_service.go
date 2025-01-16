@@ -7,10 +7,10 @@ import (
 )
 
 type AuthService struct {
-	userRepo *repositories.UserRepository
+	userRepo repositories.UserRepository // Remove the pointer
 }
 
-func NewAuthService(userRepo *repositories.UserRepository) *AuthService {
+func NewAuthService(userRepo repositories.UserRepository) *AuthService {
 	return &AuthService{userRepo: userRepo}
 }
 

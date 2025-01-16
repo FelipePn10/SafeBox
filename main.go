@@ -47,7 +47,7 @@ func main() {
 	backupService := services.NewBackupService(backupRepo)
 
 	// Configura as rotas
-	e, err := routes.NewRouteConfig(authService, backupService, *userRepo)
+	e, err := routes.NewRouteConfig(authService, backupService, db)
 	if err != nil {
 		log.Fatalf("Failed to configure routes: %v", err)
 	}

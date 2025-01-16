@@ -1,3 +1,4 @@
+// repositories/user_repository.go
 package repositories
 
 import (
@@ -6,25 +7,67 @@ import (
 	"gorm.io/gorm"
 )
 
-type UserRepository struct {
+// UserRepository defines the interface for user operations
+type UserRepository interface {
+	CreateOrUpdate(user *models.OAuthUser) error
+	FindByUsername(username string) (*models.OAuthUser, error)
+	FindByEmail(email string) (*models.OAuthUser, error)
+	UpdateStorageUsed(username string, size int64) error
+	CreateUser(user *models.OAuthUser) error
+	Update(user *models.OAuthUser) error
+}
+
+// userRepositoryImpl implements UserRepository interface
+type userRepositoryImpl struct {
 	db *gorm.DB
 }
 
-func NewUserRepository(db *gorm.DB) *UserRepository {
-	return &UserRepository{db: db}
+// NewUserRepository creates a new UserRepository instance
+func NewUserRepository(db *gorm.DB) UserRepository {
+	return &userRepositoryImpl{
+		db: db,
+	}
 }
 
-func (r *UserRepository) CreateUser(user *models.OAuthUser) error {
+func (r *userRepositoryImpl) CreateUser(user *models.OAuthUser) error {
 	return r.db.Create(user).Error
 }
 
-func (r *UserRepository) FindByUsername(username string) (*models.OAuthUser, error) {
+func (r *userRepositoryImpl) FindByUsername(username string) (*models.OAuthUser, error) {
 	var user models.OAuthUser
 	err := r.db.Where("username = ?", username).First(&user).Error
-	return &user, err
+	if err != nil {
+		return nil, err
+	}
+	return &user, nil
 }
 
-// Update atualiza um usuário no banco de dados
-func (r *UserRepository) Update(user *models.OAuthUser) error {
+func (r *userRepositoryImpl) FindByEmail(email string) (*models.OAuthUser, error) {
+	var user models.OAuthUser
+	err := r.db.Where("email = ?", email).First(&user).Error
+	if err != nil {
+		return nil, err
+	}
+	return &user, nil
+}
+
+func (r *userRepositoryImpl) Update(user *models.OAuthUser) error {
 	return r.db.Save(user).Error
+}
+
+func (r *userRepositoryImpl) UpdateStorageUsed(username string, size int64) error {
+	return r.db.Model(&models.OAuthUser{}).
+		Where("username = ?", username).
+		UpdateColumn("storage_used", gorm.Expr("storage_used + ?", size)).
+		Error
+}
+
+func (r *userRepositoryImpl) CreateOrUpdate(user *models.OAuthUser) error {
+	return r.db.Where("email = ?", user.Email).
+		Assign(models.OAuthUser{
+			Username: user.Username,
+			Avatar:   user.Avatar,
+			Provider: user.Provider,
+		}).
+		FirstOrCreate(user).Error
 }

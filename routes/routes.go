@@ -15,6 +15,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sirupsen/logrus"
+	"gorm.io/gorm"
 )
 
 type Metrics struct {
@@ -28,17 +29,17 @@ func newMetrics() *Metrics {
 		uploads: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: "safebox",
 			Name:      "uploads_total",
-			Help:      "Total de uploads realizados",
+			Help:      "Total number of uploads",
 		}),
 		downloads: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: "safebox",
 			Name:      "downloads_total",
-			Help:      "Total de downloads realizados",
+			Help:      "Total number of downloads",
 		}),
 		deletes: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: "safebox",
 			Name:      "deletes_total",
-			Help:      "Total de exclusões realizadas",
+			Help:      "Total number of deletions",
 		}),
 	}
 
@@ -49,6 +50,7 @@ func newMetrics() *Metrics {
 type AppControllers struct {
 	Backup *controllers.BackupController
 	File   *controllers.FileController
+	OAuth  *controllers.OAuthController
 }
 
 type Config struct {
@@ -57,25 +59,38 @@ type Config struct {
 	Metrics     *Metrics
 }
 
-func NewRouteConfig(authService *services.AuthService, backupService *services.BackupService, userRepo repositories.UserRepository) (*echo.Echo, error) {
-	e := echo.New()
+func NewRouteConfig(authService *services.AuthService, backupService *services.BackupService, db *gorm.DB) (*echo.Echo, error) {
+	logger := logrus.WithField("component", "RouteConfig")
 
 	if err := godotenv.Load(); err != nil {
-		logrus.WithError(err).Error("Erro ao carregar arquivo .env")
-		return nil, fmt.Errorf("erro ao carregar arquivo .env: %w", err)
+		logger.WithError(err).Error("Failed to load .env file")
+		return nil, fmt.Errorf("failed to load .env file: %w", err)
 	}
 
 	storage, err := setupStorage()
 	if err != nil {
-		logrus.WithError(err).Error("Erro ao configurar storage")
-		return nil, fmt.Errorf("erro ao configurar storage: %w", err)
+		logger.WithError(err).Error("Failed to setup storage")
+		return nil, fmt.Errorf("failed to setup storage: %w", err)
 	}
+
+	// Initialize UserRepository
+	userRepo := repositories.NewUserRepository(db)
+
+	// Initialize OAuth controller with the interface
+	oauthController, err := controllers.NewOAuthController(userRepo)
+	if err != nil {
+		logger.WithError(err).Error("Failed to initialize OAuth controller")
+		return nil, fmt.Errorf("failed to initialize OAuth controller: %w", err)
+	}
+
+	e := echo.New()
 
 	authMiddleware := middlewares.NewAuthMiddleware(authService, userRepo)
 
 	controllers := AppControllers{
 		Backup: controllers.NewBackupController(storage, backupService.GetBackupRepo()),
 		File:   controllers.NewFileController(storage),
+		OAuth:  oauthController,
 	}
 
 	metrics := newMetrics()
@@ -87,8 +102,8 @@ func NewRouteConfig(authService *services.AuthService, backupService *services.B
 	}
 
 	if err := registerRoutes(config, authMiddleware); err != nil {
-		logrus.WithError(err).Error("Erro ao registrar rotas")
-		return nil, fmt.Errorf("erro ao registrar rotas: %w", err)
+		logger.WithError(err).Error("Failed to register routes")
+		return nil, fmt.Errorf("failed to register routes: %w", err)
 	}
 
 	return e, nil
@@ -103,8 +118,7 @@ func setupStorage() (storage.Storage, error) {
 	}
 
 	if err := config.Validate(); err != nil {
-		logrus.WithError(err).Error("Configuração R2 inválida")
-		return nil, fmt.Errorf("configuração R2 inválida: %w", err)
+		return nil, fmt.Errorf("invalid R2 configuration: %w", err)
 	}
 
 	return storage.NewR2Storage(config)
@@ -113,23 +127,36 @@ func setupStorage() (storage.Storage, error) {
 func registerRoutes(config *Config, auth *middlewares.AuthMiddleware) error {
 	e := config.Echo
 
-	// Rotas públicas
+	// Public routes
 	public := e.Group("")
-	public.GET("/oauth/login", controllers.OAuthLogin)       // Inicia o fluxo OAuth
-	public.GET("/oauth/callback", controllers.OAuthCallback) // Callback do OAuth
-	public.GET("/health", func(c echo.Context) error {       // Health check
-		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
-	})
+	{
+		public.GET("/oauth/login", config.Controllers.OAuth.HandleLogin)
+		public.GET("/oauth/callback", config.Controllers.OAuth.HandleCallback)
+		public.GET("/health", handleHealth)
+	}
 
-	// Rotas protegidas
+	// Protected API routes
 	api := e.Group("/api", auth.RequireAuth())
-	api.POST("/backup", config.Controllers.Backup.Backup)
-	api.POST("/upload", config.Controllers.File.Upload)
-	api.GET("/download/:id", config.Controllers.File.Download)
-	api.DELETE("/delete/:id", config.Controllers.File.Delete)
+	{
+		// Backup routes
+		api.POST("/backup", config.Controllers.Backup.Backup)
 
-	// Métricas
+		// File routes
+		api.POST("/upload", config.Controllers.File.Upload)
+		api.GET("/download/:id", config.Controllers.File.Download)
+		api.DELETE("/delete/:id", config.Controllers.File.Delete)
+	}
+
+	// Metrics route
 	e.GET("/metrics", echo.WrapHandler(promhttp.Handler()))
 
 	return nil
+}
+
+// handleHealth handles the health check endpoint
+func handleHealth(c echo.Context) error {
+	return c.JSON(http.StatusOK, map[string]string{
+		"status": "ok",
+		"info":   "Service is healthy",
+	})
 }

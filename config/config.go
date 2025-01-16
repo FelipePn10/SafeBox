@@ -1,17 +1,22 @@
 package config
 
 import (
+	"SafeBox/repositories"
 	"os"
 	"strconv"
 )
 
 type Config struct {
-	DBHost     string
-	DBPort     int
-	DBUser     string
-	DBPassword string
-	DBName     string
-	JWTSecret  string
+	DBHost      string
+	DBPort      int
+	DBUser      string
+	DBPassword  string
+	DBName      string
+	JWTSecret   string
+	Echo        *echo.Echo
+	Controllers AppControllers
+	Metrics     *Metrics
+	User        *repositories.UserRepository
 }
 
 func LoadConfig() *Config {

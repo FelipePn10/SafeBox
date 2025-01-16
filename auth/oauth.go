@@ -1,3 +1,4 @@
+// auth/oauth.go
 package auth
 
 import (
@@ -9,11 +10,11 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 
 	"SafeBox/models"
 	"SafeBox/repositories"
+	"SafeBox/utils"
 
 	"github.com/joho/godotenv"
 	"github.com/labstack/echo/v4"
@@ -24,10 +25,9 @@ import (
 
 var (
 	GoogleOAuthConfig *oauth2.Config
-	stateTokens       = make(map[string]bool) // To store and validate state tokens
+	stateTokens       = make(map[string]bool)
 )
 
-// Initialize OAuth configuration
 func init() {
 	err := godotenv.Load()
 	if err != nil {
@@ -36,12 +36,12 @@ func init() {
 
 	redirectURL := os.Getenv("OAUTH_REDIRECT_URL")
 	if redirectURL == "" {
-		redirectURL = "http://localhost:8080/oauth/callback" // Default fallback
+		redirectURL = "http://localhost:8080/oauth/callback"
 	}
 
 	GoogleOAuthConfig = &oauth2.Config{
-		ClientID:     os.Getenv("CLIENT_ID"),
-		ClientSecret: os.Getenv("CLIENT_SECRET"),
+		ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
+		ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
 		RedirectURL:  redirectURL,
 		Scopes: []string{
 			"https://www.googleapis.com/auth/userinfo.email",
@@ -51,21 +51,9 @@ func init() {
 	}
 }
 
-// parseUserID converts a string to a uint
-func parseUserID(idStr string) uint {
-	id, err := strconv.ParseUint(idStr, 10, 32)
-	if err != nil {
-		logrus.WithError(err).Error("Failed to parse user ID")
-		return 0
-	}
-	return uint(id)
-}
-
-// generateStateToken generates a secure, random state token for OAuth flow
 func generateStateToken() string {
 	b := make([]byte, 32)
-	_, err := rand.Read(b)
-	if err != nil {
+	if _, err := rand.Read(b); err != nil {
 		logrus.WithError(err).Error("Failed to generate state token")
 		return ""
 	}
@@ -74,65 +62,81 @@ func generateStateToken() string {
 	return token
 }
 
-// OAuthLogin redirects the user to Google's OAuth 2.0 authentication page
-func OAuthLogin(c echo.Context) error {
-	logrus.Info("Initiating Google OAuth login flow")
+func NewOAuthHandler(userRepo repositories.UserRepository) *OAuthHandler {
+	return &OAuthHandler{userRepo: userRepo}
+}
+
+func (h *OAuthHandler) HandleLogin(c echo.Context) error {
+	logger := logrus.WithField("handler", "HandleLogin")
+	logger.Info("Iniciando fluxo de login OAuth")
+
 	state := generateStateToken()
-	url := GoogleOAuthConfig.AuthCodeURL(state, oauth2.AccessTypeOffline)
+	if state == "" {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to generate state token"})
+	}
+
+	url := GoogleOAuthConfig.AuthCodeURL(state)
 	return c.Redirect(http.StatusTemporaryRedirect, url)
 }
 
-// OAuthCallback handles the OAuth 2.0 callback and retrieves user information
-func OAuthCallback(c echo.Context) error {
-	logger := logrus.WithField("handler", "OAuthCallback")
-	logger.Info("Processing OAuth callback")
+func (h *OAuthHandler) HandleCallback(c echo.Context) error {
+	logger := logrus.WithField("handler", "HandleCallback")
+	logger.Info("Processando callback OAuth")
 
-	// Retrieve and validate state token
 	state := c.QueryParam("state")
 	if !stateTokens[state] {
-		logger.Error("Invalid or missing state token")
+		logger.Error("Invalid state token received")
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid state token"})
 	}
-	delete(stateTokens, state) // Consume state token
+	delete(stateTokens, state)
 
 	code := c.QueryParam("code")
 	if code == "" {
+		logger.Error("No authorization code received")
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Authorization code not provided"})
 	}
 
-	ctx := context.Background()
-	token, err := GoogleOAuthConfig.Exchange(ctx, code)
+	token, err := GoogleOAuthConfig.Exchange(context.Background(), code)
 	if err != nil {
-		logger.WithError(err).Error("Failed to exchange authorization code")
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to exchange authorization code"})
+		logger.WithError(err).Error("Failed to exchange authorization code for token")
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to exchange token"})
 	}
 
-	// Retrieve user info from Google
-	userInfo, err := GetUserInfoFromGoogle(token)
+	userInfo, err := getUserInfo(token)
 	if err != nil {
-		logger.WithError(err).Error("Failed to retrieve user info")
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to retrieve user information"})
+		logger.WithError(err).Error("Failed to get user info from Google")
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to get user info"})
 	}
 
-	oauthUser := models.OAuthUser{
-		Provider: "google",
-		Email:    fmt.Sprintf("%v", userInfo["email"]),
-		Username: fmt.Sprintf("%v", userInfo["name"]),
-		Avatar:   fmt.Sprintf("%v", userInfo["picture"]),
+	user := &models.OAuthUser{
+		Email:        userInfo["email"].(string),
+		Username:     userInfo["name"].(string),
+		Avatar:       userInfo["picture"].(string),
+		Provider:     "google",
+		StorageLimit: 5 * 1024 * 1024 * 1024, // 5GB default limit
+		Plan:         "free",
 	}
 
-	// Save user in database
-	result := repositories.DBConnection.Create(&oauthUser)
-	if result.Error != nil {
-		logger.WithError(result.Error).Error("Failed to create user in database")
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to create user"})
+	// Use the injected userRepo
+	if err := h.userRepo.CreateOrUpdate(user); err != nil {
+		logger.WithError(err).Error("Failed to create/update user in database")
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to process user"})
 	}
 
-	return c.JSON(http.StatusOK, oauthUser)
+	// Gerar JWT token
+	jwtToken, err := utils.GenerateJWTToken(user)
+	if err != nil {
+		logger.WithError(err).Error("Failed to generate JWT token")
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to generate auth token"})
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"token": jwtToken,
+		"user":  user,
+	})
 }
 
-// GetUserInfoFromGoogle retrieves user information from Google's UserInfo API
-func GetUserInfoFromGoogle(token *oauth2.Token) (map[string]interface{}, error) {
+func getUserInfo(token *oauth2.Token) (map[string]interface{}, error) {
 	client := GoogleOAuthConfig.Client(context.Background(), token)
 	resp, err := client.Get("https://www.googleapis.com/oauth2/v3/userinfo")
 	if err != nil {
@@ -152,9 +156,10 @@ func GetUserInfoFromGoogle(token *oauth2.Token) (map[string]interface{}, error) 
 	return userInfo, nil
 }
 
-// RevokeToken revokes the given OAuth token
 func RevokeToken(token string) error {
-	logrus.WithField("token", token).Info("Revoking OAuth token")
+	logger := logrus.WithField("handler", "RevokeToken")
+	logger.Info("Revogando token OAuth")
+
 	req, err := http.NewRequest("POST", "https://oauth2.googleapis.com/revoke",
 		strings.NewReader(fmt.Sprintf("token=%s", token)))
 	if err != nil {
