@@ -1,4 +1,3 @@
-// auth/oauth.go
 package auth
 
 import (
@@ -14,7 +13,6 @@ import (
 
 	"SafeBox/models"
 	"SafeBox/repositories"
-	"SafeBox/utils"
 
 	"github.com/joho/godotenv"
 	"github.com/labstack/echo/v4"
@@ -51,15 +49,8 @@ func init() {
 	}
 }
 
-func generateStateToken() string {
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		logrus.WithError(err).Error("Failed to generate state token")
-		return ""
-	}
-	token := base64.StdEncoding.EncodeToString(b)
-	stateTokens[token] = true
-	return token
+type OAuthHandler struct {
+	userRepo repositories.UserRepository
 }
 
 func NewOAuthHandler(userRepo repositories.UserRepository) *OAuthHandler {
@@ -113,27 +104,16 @@ func (h *OAuthHandler) HandleCallback(c echo.Context) error {
 		Username:     userInfo["name"].(string),
 		Avatar:       userInfo["picture"].(string),
 		Provider:     "google",
-		StorageLimit: 5 * 1024 * 1024 * 1024, // 5GB default limit
+		StorageLimit: 20 * 1024 * 1024 * 1024, // 20 GB
 		Plan:         "free",
 	}
 
-	// Use the injected userRepo
 	if err := h.userRepo.CreateOrUpdate(user); err != nil {
 		logger.WithError(err).Error("Failed to create/update user in database")
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to process user"})
 	}
 
-	// Gerar JWT token
-	jwtToken, err := utils.GenerateJWTToken(user)
-	if err != nil {
-		logger.WithError(err).Error("Failed to generate JWT token")
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to generate auth token"})
-	}
-
-	return c.JSON(http.StatusOK, map[string]interface{}{
-		"token": jwtToken,
-		"user":  user,
-	})
+	return c.JSON(http.StatusOK, user)
 }
 
 func getUserInfo(token *oauth2.Token) (map[string]interface{}, error) {
@@ -154,6 +134,17 @@ func getUserInfo(token *oauth2.Token) (map[string]interface{}, error) {
 	}
 
 	return userInfo, nil
+}
+
+func generateStateToken() string {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		logrus.WithError(err).Error("Failed to generate state token")
+		return ""
+	}
+	token := base64.StdEncoding.EncodeToString(b)
+	stateTokens[token] = true
+	return token
 }
 
 func RevokeToken(token string) error {

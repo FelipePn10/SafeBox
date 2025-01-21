@@ -1,4 +1,3 @@
-// controllers/auth_controller.go
 package controllers
 
 import (
@@ -13,7 +12,6 @@ import (
 
 	"SafeBox/models"
 	"SafeBox/repositories"
-	"SafeBox/utils"
 
 	"github.com/labstack/echo/v4"
 	"github.com/sirupsen/logrus"
@@ -24,10 +22,9 @@ import (
 type OAuthController struct {
 	config      *oauth2.Config
 	stateTokens map[string]bool
-	userRepo    repositories.UserRepository // Changed from *repositories.UserRepository
+	userRepo    repositories.UserRepository
 }
 
-// NewOAuthController creates a new instance of OAuthController
 func NewOAuthController(userRepo repositories.UserRepository) (*OAuthController, error) {
 	clientID := os.Getenv("GOOGLE_CLIENT_ID")
 	clientSecret := os.Getenv("GOOGLE_CLIENT_SECRET")
@@ -55,25 +52,6 @@ func NewOAuthController(userRepo repositories.UserRepository) (*OAuthController,
 	}, nil
 }
 
-// generateStateToken creates a secure random state token for OAuth flow
-func (c *OAuthController) generateStateToken() (string, error) {
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("failed to generate random bytes: %w", err)
-	}
-	token := base64.URLEncoding.EncodeToString(b)
-	c.stateTokens[token] = true
-
-	// Clean up old tokens after 5 minutes
-	go func() {
-		time.Sleep(5 * time.Minute)
-		delete(c.stateTokens, token)
-	}()
-
-	return token, nil
-}
-
-// HandleLogin initiates the OAuth login process
 func (c *OAuthController) HandleLogin(ctx echo.Context) error {
 	state, err := c.generateStateToken()
 	if err != nil {
@@ -86,7 +64,6 @@ func (c *OAuthController) HandleLogin(ctx echo.Context) error {
 	return ctx.Redirect(http.StatusTemporaryRedirect, url)
 }
 
-// HandleCallback processes the OAuth callback
 func (c *OAuthController) HandleCallback(ctx echo.Context) error {
 	logger := logrus.WithFields(logrus.Fields{
 		"handler": "HandleCallback",
@@ -131,7 +108,7 @@ func (c *OAuthController) HandleCallback(ctx echo.Context) error {
 		Username:     userInfo["name"].(string),
 		Avatar:       userInfo["picture"].(string),
 		Provider:     "google",
-		StorageLimit: 5 * 1024 * 1024 * 1024, // 5GB default limit
+		StorageLimit: 20 * 1024 * 1024 * 1024, // 20GB default limit
 		Plan:         "free",
 	}
 
@@ -142,23 +119,9 @@ func (c *OAuthController) HandleCallback(ctx echo.Context) error {
 		})
 	}
 
-	// Generate tokens using the utility function
-	tokens, err := utils.GenerateOAuthToken(ctx.Request().Context(), user.Username)
-	if err != nil {
-		logger.WithError(err).Error("Failed to generate tokens")
-		return ctx.JSON(http.StatusInternalServerError, map[string]string{
-			"error": "Failed to generate authentication tokens",
-		})
-	}
-
-	return ctx.JSON(http.StatusOK, map[string]interface{}{
-		"access_token":  tokens.AccessToken,
-		"refresh_token": tokens.RefreshToken,
-		"user":          user,
-	})
+	return ctx.JSON(http.StatusOK, user)
 }
 
-// getUserInfo fetches the user information from Google's userinfo endpoint
 func (c *OAuthController) getUserInfo(token *oauth2.Token) (map[string]interface{}, error) {
 	client := c.config.Client(context.Background(), token)
 	resp, err := client.Get("https://www.googleapis.com/oauth2/v3/userinfo")
@@ -173,4 +136,21 @@ func (c *OAuthController) getUserInfo(token *oauth2.Token) (map[string]interface
 	}
 
 	return userInfo, nil
+}
+
+func (c *OAuthController) generateStateToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("failed to generate random bytes: %w", err)
+	}
+	token := base64.URLEncoding.EncodeToString(b)
+	c.stateTokens[token] = true
+
+	// Clean up old tokens after 5 minutes
+	go func() {
+		time.Sleep(5 * time.Minute)
+		delete(c.stateTokens, token)
+	}()
+
+	return token, nil
 }
