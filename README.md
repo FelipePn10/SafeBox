@@ -8,7 +8,6 @@ O **SafeBox** é uma solução robusta de armazenamento em nuvem projetada para 
 - **Echo**: Framework web em Go para construção de APIs rápidas e eficientes.
 - **GORM**: ORM (Object Relational Mapping) para Go, facilitando a interação com bancos de dados relacionais.
 - **Logrus**: Biblioteca de logging estruturado para Go, proporcionando logs detalhados e configuráveis.
-- **JWT (JSON Web Tokens)**: Implementação de autenticação e autorização segura.
 - **OAuth**: Protocolo de autorização para integração com serviços de terceiros.
 - **Cloudflare R2**: Solução de armazenamento de objetos compatível com S3, utilizada para armazenar arquivos de forma eficiente e econômica.
 - **Prometheus**: Sistema de monitoramento e alerta para coletar métricas detalhadas.

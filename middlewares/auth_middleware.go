@@ -1,79 +1,72 @@
 package middlewares
 
 import (
-	"SafeBox/models"
-	"SafeBox/repositories"
-	"SafeBox/utils"
+	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
+
+	"SafeBox/models"
+	"SafeBox/repositories"
 
 	"github.com/labstack/echo/v4"
+	"golang.org/x/oauth2"
 )
 
 type AuthConfig struct {
-	RequireToken      bool
-	RequirePermission []string // Usamos strings para as permissões
-}
-
-type UserPlanConfig struct {
-	AllowedPlans []string
-}
-
-type TokenValidator interface {
-	ValidateToken(token string) (*utils.TokenClaims, error)
+	RequireAuth    bool
+	RequiredScopes []string
+	RequiredPlan   string
+	CheckStorage   bool
 }
 
 type AuthMiddleware struct {
-	tokenValidator TokenValidator
-	userRepo       repositories.UserRepository
+	oauthConfig *oauth2.Config
+	userRepo    repositories.UserRepository
 }
 
-func NewAuthMiddleware(validator TokenValidator, userRepo repositories.UserRepository) *AuthMiddleware {
+func NewAuthMiddleware(userRepo repositories.UserRepository) *AuthMiddleware {
 	return &AuthMiddleware{
-		tokenValidator: validator,
-		userRepo:       userRepo,
+		userRepo: userRepo,
 	}
 }
 
-func (am *AuthMiddleware) RequireAuth() echo.MiddlewareFunc {
+func (am *AuthMiddleware) RequireAuth(scopes ...string) echo.MiddlewareFunc {
 	return am.WithConfig(AuthConfig{
-		RequireToken: true,
+		RequireAuth:    true,
+		RequiredScopes: scopes,
 	})
 }
 
-func (am *AuthMiddleware) RequirePermissions(permissions ...string) echo.MiddlewareFunc {
+func (am *AuthMiddleware) RequirePlan(plan string) echo.MiddlewareFunc {
 	return am.WithConfig(AuthConfig{
-		RequireToken:      true,
-		RequirePermission: permissions,
+		RequiredPlan: plan,
 	})
 }
 
 func (am *AuthMiddleware) WithConfig(config AuthConfig) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
-			if config.RequireToken {
-				token := extractToken(c)
-				if token == "" {
-					return echo.NewHTTPError(http.StatusUnauthorized, "Token de autorização não encontrado")
-				}
-
-				claims, err := am.tokenValidator.ValidateToken(token)
+			if config.RequireAuth {
+				user, err := am.validateAuth(c)
 				if err != nil {
-					return echo.NewHTTPError(http.StatusUnauthorized, fmt.Sprintf("Token inválido: %v", err))
+					return c.JSON(http.StatusUnauthorized, errorResponse(err))
 				}
-
-				user, err := am.userRepo.FindByUsername(claims.Username)
-				if err != nil {
-					return echo.NewHTTPError(http.StatusUnauthorized, "Usuário não encontrado")
-				}
-
 				c.Set("user", user)
+			}
 
-				if len(config.RequirePermission) > 0 {
-					if err := validatePermissions(user, config.RequirePermission); err != nil {
-						return err
-					}
+			if config.RequiredPlan != "" {
+				if err := am.validatePlan(c); err != nil {
+					return c.JSON(http.StatusForbidden, errorResponse(err))
+				}
+			}
+
+			if config.CheckStorage {
+				if err := am.validateStorage(c); err != nil {
+					return c.JSON(http.StatusForbidden, errorResponse(err))
 				}
 			}
 
@@ -82,51 +75,79 @@ func (am *AuthMiddleware) WithConfig(config AuthConfig) echo.MiddlewareFunc {
 	}
 }
 
-func CheckUserPlan() echo.MiddlewareFunc {
-	return func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
-			user, ok := c.Get("user").(*models.OAuthUser)
-			if !ok {
-				return echo.NewHTTPError(http.StatusInternalServerError, "Usuário não encontrado no contexto")
-			}
-
-			if user.Plan == "free" && user.StorageUsed >= user.StorageLimit {
-				return echo.NewHTTPError(http.StatusForbidden, "Limite de armazenamento excedido")
-			}
-
-			return next(c)
-		}
-	}
-}
-
-func extractToken(c echo.Context) string {
-	token := c.Request().Header.Get("Authorization")
-	return strings.TrimPrefix(token, "Bearer ")
-}
-
-// Função para validar permissões
-func validatePermissions(user *models.OAuthUser, requiredPermissions []string) error {
-	// Converte as permissões do usuário para um slice de strings
-	userPermissions := make([]string, len(user.Permissions))
-	for i, p := range user.Permissions {
-		userPermissions[i] = p.Name
+func (am *AuthMiddleware) validateAuth(c echo.Context) (*models.OAuthUser, error) {
+	token := extractAccessToken(c)
+	if token == "" {
+		return nil, errors.New("authorization token required")
 	}
 
-	// Verifica se o usuário tem todas as permissões necessárias
-	for _, required := range requiredPermissions {
-		if !hasPermission(userPermissions, required) {
-			return echo.NewHTTPError(http.StatusForbidden, "Permissão negada: "+required)
-		}
+	// Verifica token com Google
+	userInfo, err := am.verifyGoogleToken(c.Request().Context(), token)
+	if err != nil {
+		return nil, fmt.Errorf("invalid token: %v", err)
+	}
+
+	// Busca usuário no banco
+	user, err := am.userRepo.FindByEmail(userInfo["email"].(string))
+	if err != nil {
+		return nil, errors.New("user not registered")
+	}
+
+	return user, nil
+}
+
+func (am *AuthMiddleware) verifyGoogleToken(ctx context.Context, token string) (map[string]interface{}, error) {
+	client := am.oauthConfig.Client(ctx, &oauth2.Token{AccessToken: token})
+	resp, err := client.Get("https://www.googleapis.com/oauth2/v3/userinfo")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("google API returned status: %d", resp.StatusCode)
+	}
+
+	var userInfo map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&userInfo); err != nil {
+		return nil, err
+	}
+
+	return userInfo, nil
+}
+
+func (am *AuthMiddleware) validatePlan(c echo.Context) error {
+	user := getAuthUser(c)
+	if user.Plan != c.Get("required_plan").(string) {
+		return fmt.Errorf("plan '%s' required", c.Get("required_plan"))
 	}
 	return nil
 }
 
-// Função auxiliar para verificar se uma permissão está presente
-func hasPermission(permissions []string, target string) bool {
-	for _, permission := range permissions {
-		if permission == target {
-			return true
-		}
+func (am *AuthMiddleware) validateStorage(c echo.Context) error {
+	user := getAuthUser(c)
+	if user.StorageUsed >= user.StorageLimit {
+		return errors.New("storage limit exceeded")
 	}
-	return false
+	return nil
+}
+
+func extractAccessToken(c echo.Context) string {
+	authHeader := c.Request().Header.Get("Authorization")
+	if parts := strings.Split(authHeader, " "); len(parts) == 2 {
+		return parts[1]
+	}
+	return ""
+}
+
+func getAuthUser(c echo.Context) *models.OAuthUser {
+	return c.Get("user").(*models.OAuthUser)
+}
+
+func errorResponse(err error) map[string]interface{} {
+	return map[string]interface{}{
+		"error":     err.Error(),
+		"success":   false,
+		"timestamp": time.Now().UTC(),
+	}
 }

@@ -1,37 +1,43 @@
 package config
 
 import (
-	"SafeBox/repositories"
 	"os"
 	"strconv"
 )
 
-type Config struct {
-	DBHost      string
-	DBPort      int
-	DBUser      string
-	DBPassword  string
-	DBName      string
-	JWTSecret   string
-	Echo        *echo.Echo
-	Controllers AppControllers
-	Metrics     *Metrics
-	User        *repositories.UserRepository
+type DatabaseConfig struct {
+	Host     string
+	Port     int
+	User     string
+	Password string
+	Name     string
 }
 
-func LoadConfig() *Config {
-	dbPort, _ := strconv.Atoi(os.Getenv("DB_PORT"))
-	return &Config{
-		DBHost:     os.Getenv("DB_HOST"),
-		DBPort:     dbPort,
-		DBUser:     os.Getenv("DB_USER"),
-		DBPassword: os.Getenv("DB_PASSWORD"),
-		DBName:     os.Getenv("DB_NAME"),
-		JWTSecret:  os.Getenv("JWT_SECRET"),
+type OAuthConfig struct {
+	ClientID     string
+	ClientSecret string
+	RedirectURL  string
+}
+
+func LoadDatabaseConfig() DatabaseConfig {
+	port, _ := strconv.Atoi(os.Getenv("DB_PORT"))
+	return DatabaseConfig{
+		Host:     os.Getenv("DB_HOST"),
+		Port:     port,
+		User:     os.Getenv("DB_USER"),
+		Password: os.Getenv("DB_PASSWORD"),
+		Name:     os.Getenv("DB_NAME"),
 	}
 }
 
-// getEnv retrieves an environment variable or returns a default value if not set.
+func LoadOAuthConfig() OAuthConfig {
+	return OAuthConfig{
+		ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
+		ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
+		RedirectURL:  getEnv("OAUTH_REDIRECT_URL", "http://localhost:8080/oauth/callback"),
+	}
+}
+
 func getEnv(key, defaultValue string) string {
 	if value, exists := os.LookupEnv(key); exists {
 		return value

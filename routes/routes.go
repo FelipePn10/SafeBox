@@ -2,6 +2,7 @@ package routes
 
 import (
 	"SafeBox/controllers"
+	"SafeBox/handlers"
 	"SafeBox/middlewares"
 	"SafeBox/repositories"
 	"SafeBox/services"
@@ -85,7 +86,7 @@ func NewRouteConfig(authService *services.AuthService, backupService *services.B
 
 	e := echo.New()
 
-	authMiddleware := middlewares.NewAuthMiddleware(authService, userRepo)
+	authMiddleware := middlewares.NewAuthMiddleware(userRepo)
 
 	controllers := AppControllers{
 		Backup: controllers.NewBackupController(storage, backupService.GetBackupRepo()),
@@ -130,8 +131,8 @@ func registerRoutes(config *Config, auth *middlewares.AuthMiddleware) error {
 	// Public routes
 	public := e.Group("")
 	{
-		public.GET("/oauth/login", config.Controllers.OAuth.HandleLogin)
-		public.GET("/oauth/callback", config.Controllers.OAuth.HandleCallback)
+		public.GET("/oauth/login", oauthHandler.Login)
+		public.GET("/oauth/callback", oauthHandler.Callback)
 		public.GET("/health", handleHealth)
 	}
 

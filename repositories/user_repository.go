@@ -3,6 +3,7 @@ package repositories
 
 import (
 	"SafeBox/models"
+	"fmt"
 
 	"gorm.io/gorm"
 )
@@ -46,7 +47,7 @@ func (r *userRepositoryImpl) FindByEmail(email string) (*models.OAuthUser, error
 	var user models.OAuthUser
 	err := r.db.Where("email = ?", email).First(&user).Error
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("user not found: %w", err)
 	}
 	return &user, nil
 }
@@ -63,11 +64,13 @@ func (r *userRepositoryImpl) UpdateStorageUsed(username string, size int64) erro
 }
 
 func (r *userRepositoryImpl) CreateOrUpdate(user *models.OAuthUser) error {
-	return r.db.Where("email = ?", user.Email).
+	return r.db.Where("oauth_id = ?", user.OAuthID).
 		Assign(models.OAuthUser{
-			Username: user.Username,
-			Avatar:   user.Avatar,
-			Provider: user.Provider,
+			Username:     user.Username,
+			Avatar:       user.Avatar,
+			AccessToken:  user.AccessToken,
+			RefreshToken: user.RefreshToken,
+			TokenExpiry:  user.TokenExpiry,
 		}).
 		FirstOrCreate(user).Error
 }

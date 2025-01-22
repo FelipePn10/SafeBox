@@ -42,8 +42,15 @@ func main() {
 	userRepo := repositories.NewUserRepository(db)
 	backupRepo := repositories.NewBackupRepository(db)
 
+	oauthHandler, err := handlers.NewOAuthHandler(userRepo)
+	if err != nil {
+		log.Fatalf("Failed to initialize OAuth handler: %v", err)
+	}
+	// Carregar configurações
+	dbConfig := config.LoadDatabaseConfig()
+	oauthConfig := config.LoadOAuthConfig()
 	// Inicializa os serviços
-	authService := services.NewAuthService(userRepo)
+	authService := services.NewAuthService(userRepo, oauthConfig)
 	backupService := services.NewBackupService(backupRepo)
 
 	// Configura as rotas

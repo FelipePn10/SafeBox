@@ -18,6 +18,5 @@ services:
       DB_USER: postgres
       DB_PASSWORD: admin
       DB_NAME: safeboxdb
-      JWT_SECRET: Qy4t1MHZpawHXmsbnQuO+T2omJFE1X52MgFYPOnebBs=
     ports:
       - "8080:8080"
