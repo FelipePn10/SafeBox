@@ -4,7 +4,11 @@ import (
 	"SafeBox/models"
 	"SafeBox/repositories"
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+
+	"golang.org/x/oauth2"
 )
 
 type AuthService struct {
@@ -20,10 +24,14 @@ func NewAuthService(userRepo repositories.UserRepository, oauthConfig *oauth2.Co
 }
 
 func (s *AuthService) FindOrCreateUser(ctx context.Context, userInfo map[string]interface{}) (*models.OAuthUser, error) {
-	email := userInfo["email"].(string)
-	user, err := s.userRepo.FindByEmail(email)
+	email, ok := userInfo["email"].(string)
+	if !ok {
+		return nil, fmt.Errorf("invalid user info: email missing")
+	}
+
+	existingUser, err := s.userRepo.FindByEmail(email)
 	if err == nil {
-		return user, nil
+		return existingUser, nil
 	}
 
 	newUser := &models.OAuthUser{
@@ -34,7 +42,7 @@ func (s *AuthService) FindOrCreateUser(ctx context.Context, userInfo map[string]
 	}
 
 	if err := s.userRepo.CreateOrUpdate(newUser); err != nil {
-		return nil, fmt.Errorf("failed to create user: %w", err)
+		return nil, fmt.Errorf("user creation failed: %w", err)
 	}
 
 	return newUser, nil
@@ -49,12 +57,12 @@ func (s *AuthService) ValidateAccessToken(ctx context.Context, token string) (ma
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("invalid token status: %d", resp.StatusCode)
+		return nil, fmt.Errorf("google API returned status: %d", resp.StatusCode)
 	}
 
 	var userInfo map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&userInfo); err != nil {
-		return nil, fmt.Errorf("failed to decode user info: %w", err)
+		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
 	return userInfo, nil

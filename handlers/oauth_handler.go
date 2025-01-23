@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"sync"
@@ -15,11 +14,9 @@ import (
 	"SafeBox/models"
 	"SafeBox/repositories"
 
-	"github.com/joho/godotenv"
 	"github.com/labstack/echo/v4"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/google"
 )
 
 type OAuthHandler struct {
@@ -28,27 +25,12 @@ type OAuthHandler struct {
 	stateStore *sync.Map
 }
 
-func NewOAuthHandler(userRepo repositories.UserRepository) (*OAuthHandler, error) {
-	if err := godotenv.Load(); err != nil {
-		log.Printf("Warning loading .env: %v", err)
-	}
-
-	config := &oauth2.Config{
-		ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
-		ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
-		RedirectURL:  getRedirectURL(),
-		Scopes: []string{
-			"https://www.googleapis.com/auth/userinfo.email",
-			"https://www.googleapis.com/auth/userinfo.profile",
-		},
-		Endpoint: google.Endpoint,
-	}
-
+func NewOAuthHandler(userRepo repositories.UserRepository, config *oauth2.Config) *OAuthHandler {
 	return &OAuthHandler{
 		config:     config,
 		userRepo:   userRepo,
 		stateStore: &sync.Map{},
-	}, nil
+	}
 }
 
 func getRedirectURL() string {
@@ -73,14 +55,12 @@ func (h *OAuthHandler) Callback(c echo.Context) error {
 		"provider": "google",
 	})
 
-	// Validate state token
 	state := c.QueryParam("state")
 	if !h.validStateToken(state) {
 		logger.Warn("Invalid state token")
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid_state"})
 	}
 
-	// Exchange code for token
 	code := c.QueryParam("code")
 	token, err := h.config.Exchange(ctx, code)
 	if err != nil {
@@ -88,14 +68,12 @@ func (h *OAuthHandler) Callback(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "token_exchange_failed"})
 	}
 
-	// Get user info
 	userInfo, err := h.getUserInfo(ctx, token)
 	if err != nil {
 		logger.WithError(err).Error("Failed to get user info")
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "user_info_fetch_failed"})
 	}
 
-	// Create/update user
 	user := h.mapUserInfo(userInfo)
 	if err := h.userRepo.CreateOrUpdate(user); err != nil {
 		logger.WithFields(logrus.Fields{
@@ -105,9 +83,7 @@ func (h *OAuthHandler) Callback(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "user_management_failed"})
 	}
 
-	// Set user in context
 	c.Set("user", user)
-
 	return c.JSON(http.StatusOK, user)
 }
 

@@ -13,10 +13,10 @@ services:
     depends_on:
       - postgres
     environment:
-      DB_HOST: postgres
+      DB_HOST: localhost
       DB_PORT: 5432
       DB_USER: postgres
       DB_PASSWORD: admin
-      DB_NAME: safeboxdb
+      DB_NAME: safebox
     ports:
       - "8080:8080"

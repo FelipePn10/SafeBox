@@ -11,72 +11,80 @@ import (
 	"os"
 
 	"github.com/joho/godotenv"
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
 func main() {
-	// Carrega as variáveis de ambiente do arquivo .env
 	if err := godotenv.Load(); err != nil {
 		log.Fatalf("Error loading .env file: %v", err)
 	}
 
-	// Conecta ao banco de dados
-	dsn := buildDatabaseDSN()
-	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
-	if err != nil {
-		log.Fatalf("Failed to connect to database: %v", err)
-	}
+	// Initialize database
+	db := initDB()
 
-	// Executa as migrações
+	// Run migrations
 	if err := migrations.RunMigrations(db); err != nil {
 		log.Fatalf("Failed to run migrations: %v", err)
 	}
 
-	// Popula a tabela de permissões com as permissões padrão
+	// Seed permissions
 	if err := seedPermissions(db); err != nil {
 		log.Fatalf("Failed to seed permissions: %v", err)
 	}
 
-	// Inicializa os repositórios
+	// Configure OAuth
+	oauthConfig := &oauth2.Config{
+		ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
+		ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
+		RedirectURL:  os.Getenv("OAUTH_REDIRECT_URL"),
+		Scopes: []string{
+			"https://www.googleapis.com/auth/userinfo.email",
+			"https://www.googleapis.com/auth/userinfo.profile",
+		},
+		Endpoint: google.Endpoint,
+	}
+
+	// Initialize repositories and services
 	userRepo := repositories.NewUserRepository(db)
 	backupRepo := repositories.NewBackupRepository(db)
-
-	oauthHandler, err := handlers.NewOAuthHandler(userRepo)
-	if err != nil {
-		log.Fatalf("Failed to initialize OAuth handler: %v", err)
-	}
-	// Carregar configurações
-	dbConfig := config.LoadDatabaseConfig()
-	oauthConfig := config.LoadOAuthConfig()
-	// Inicializa os serviços
 	authService := services.NewAuthService(userRepo, oauthConfig)
 	backupService := services.NewBackupService(backupRepo)
 
-	// Configura as rotas
-	e, err := routes.NewRouteConfig(authService, backupService, db)
+	// Setup routes
+	e, err := routes.NewRouteConfig(authService, backupService, db, oauthConfig)
 	if err != nil {
 		log.Fatalf("Failed to configure routes: %v", err)
 	}
 
-	// Inicia o servidor
-	if err := e.Start(":" + os.Getenv("PORT")); err != nil {
-		log.Fatalf("Failed to start server: %v", err)
+	// Start server
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
 	}
+	log.Printf("Server starting on :%s", port)
+	log.Fatal(e.Start(":" + port))
 }
 
-// buildDatabaseDSN constrói a string de conexão com o banco de dados
-func buildDatabaseDSN() string {
-	host := os.Getenv("DB_HOST")
-	port := os.Getenv("DB_PORT")
-	user := os.Getenv("DB_USER")
-	password := os.Getenv("DB_PASSWORD")
-	dbname := os.Getenv("DB_NAME")
+func initDB() *gorm.DB {
+	dsn := fmt.Sprintf(
+		"host=%s port=%s user=%s password=%s dbname=%s sslmode=disable TimeZone=UTC",
+		os.Getenv("DB_HOST"),
+		os.Getenv("DB_PORT"),
+		os.Getenv("DB_USER"),
+		os.Getenv("DB_PASSWORD"),
+		os.Getenv("DB_NAME"),
+	)
 
-	return "host=" + host + " port=" + port + " user=" + user + " password=" + password + " dbname=" + dbname + " sslmode=disable TimeZone=UTC"
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err != nil {
+		log.Fatalf("Failed to connect to database: %v", err)
+	}
+	return db
 }
 
-// seedPermissions popula a tabela de permissões com as permissões padrão
 func seedPermissions(db *gorm.DB) error {
 	permissions := []models.PermissionModel{
 		{Name: string(models.READ)},
@@ -86,13 +94,12 @@ func seedPermissions(db *gorm.DB) error {
 		{Name: string(models.PermissionBackup)},
 	}
 
-	for _, permission := range permissions {
-		// Usa FirstOrCreate para evitar duplicação
-		if err := db.FirstOrCreate(&permission, models.PermissionModel{Name: permission.Name}).Error; err != nil {
-			return fmt.Errorf("failed to seed permission %s: %w", permission.Name, err)
+	for _, p := range permissions {
+		result := db.FirstOrCreate(&p, "name = ?", p.Name)
+		if result.Error != nil {
+			return fmt.Errorf("failed to seed permission %s: %w", p.Name, result.Error)
 		}
 	}
-
-	log.Println("Permissions seeded successfully!")
+	log.Println("Permissions seeded successfully")
 	return nil
 }

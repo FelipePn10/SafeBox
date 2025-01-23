@@ -5,18 +5,18 @@ import (
 	"strconv"
 )
 
+type OAuthConfig struct {
+	ClientID     string
+	ClientSecret string
+	RedirectURL  string
+}
+
 type DatabaseConfig struct {
 	Host     string
 	Port     int
 	User     string
 	Password string
 	Name     string
-}
-
-type OAuthConfig struct {
-	ClientID     string
-	ClientSecret string
-	RedirectURL  string
 }
 
 func LoadDatabaseConfig() DatabaseConfig {

@@ -2,6 +2,7 @@ package middlewares
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
@@ -9,9 +10,8 @@ import (
 )
 
 type ErrorResponse struct {
-	Error     string      `json:"error"`
-	Details   interface{} `json:"details,omitempty"`
-	RequestID string      `json:"request_id,omitempty"`
+	Error   string `json:"error"`
+	Message string `json:"message,omitempty"`
 }
 
 func ErrorHandler() echo.MiddlewareFunc {
@@ -22,29 +22,21 @@ func ErrorHandler() echo.MiddlewareFunc {
 				return nil
 			}
 
-			logEntry := logrus.WithFields(logrus.Fields{
-				"method":    c.Request().Method,
-				"path":      c.Path(),
-				"status":    c.Response().Status,
-				"client_ip": c.RealIP(),
-			})
+			logrus.WithFields(logrus.Fields{
+				"error": err.Error(),
+				"path":  c.Path(),
+			}).Error("Request error")
 
-			// Tratamento de erros específicos
 			var httpErr *echo.HTTPError
 			if errors.As(err, &httpErr) {
-				logEntry.WithField("code", httpErr.Code).Error(httpErr.Message)
 				return c.JSON(httpErr.Code, ErrorResponse{
-					Error:     http.Error(httpErr.Message, httpErr.Code),
-					RequestID: c.Response().Header().Get(echo.HeaderXRequestID),
+					Error:   http.StatusText(httpErr.Code),
+					Message: fmt.Sprintf("%v", httpErr.Message),
 				})
 			}
 
-			// Erro genérico
-			logEntry.WithError(err).Error("Unexpected error")
 			return c.JSON(http.StatusInternalServerError, ErrorResponse{
-				Error:     "internal_server_error",
-				Details:   err.Error(),
-				RequestID: c.Response().Header().Get(echo.HeaderXRequestID),
+				Error: "internal_server_error",
 			})
 		}
 	}

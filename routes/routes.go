@@ -1,21 +1,20 @@
 package routes
 
 import (
-	"SafeBox/controllers"
 	"SafeBox/handlers"
 	"SafeBox/middlewares"
 	"SafeBox/repositories"
 	"SafeBox/services"
-	"SafeBox/storage"
-	"fmt"
-	"net/http"
-	"os"
 
-	"github.com/joho/godotenv"
+	// "SafeBox/storage"
+	// "fmt"
+	// "net/http"
+	// "os"
+
 	"github.com/labstack/echo/v4"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/sirupsen/logrus"
+	"golang.org/x/oauth2"
 	"gorm.io/gorm"
 )
 
@@ -26,7 +25,7 @@ type Metrics struct {
 }
 
 func newMetrics() *Metrics {
-	m := &Metrics{
+	return &Metrics{
 		uploads: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: "safebox",
 			Name:      "uploads_total",
@@ -43,121 +42,84 @@ func newMetrics() *Metrics {
 			Help:      "Total number of deletions",
 		}),
 	}
-
-	prometheus.MustRegister(m.uploads, m.downloads, m.deletes)
-	return m
 }
 
-type AppControllers struct {
-	Backup *controllers.BackupController
-	File   *controllers.FileController
-	OAuth  *controllers.OAuthController
+type AppHandlers struct {
+	OAuth  *handlers.OAuthHandler
+	Backup *handlers.BackupHandler
+	File   *handlers.FileHandler
 }
 
-type Config struct {
-	Echo        *echo.Echo
-	Controllers AppControllers
-	Metrics     *Metrics
-}
-
-func NewRouteConfig(authService *services.AuthService, backupService *services.BackupService, db *gorm.DB) (*echo.Echo, error) {
-	logger := logrus.WithField("component", "RouteConfig")
-
-	if err := godotenv.Load(); err != nil {
-		logger.WithError(err).Error("Failed to load .env file")
-		return nil, fmt.Errorf("failed to load .env file: %w", err)
-	}
-
-	storage, err := setupStorage()
-	if err != nil {
-		logger.WithError(err).Error("Failed to setup storage")
-		return nil, fmt.Errorf("failed to setup storage: %w", err)
-	}
-
-	// Initialize UserRepository
-	userRepo := repositories.NewUserRepository(db)
-
-	// Initialize OAuth controller with the interface
-	oauthController, err := controllers.NewOAuthController(userRepo)
-	if err != nil {
-		logger.WithError(err).Error("Failed to initialize OAuth controller")
-		return nil, fmt.Errorf("failed to initialize OAuth controller: %w", err)
-	}
-
+func NewRouteConfig(
+	authService *services.AuthService,
+	backupService *services.BackupService,
+	db *gorm.DB,
+	oauthConfig *oauth2.Config,
+) (*echo.Echo, error) {
 	e := echo.New()
 
-	authMiddleware := middlewares.NewAuthMiddleware(userRepo)
+	// Initialize storage
+	// //storage, err := setupStorage()
+	// if err != nil {
+	// 	return nil, fmt.Errorf("storage setup failed: %w", err)
+	// }
 
-	controllers := AppControllers{
-		Backup: controllers.NewBackupController(storage, backupService.GetBackupRepo()),
-		File:   controllers.NewFileController(storage),
-		OAuth:  oauthController,
-	}
+	// Initialize repositories
+	userRepo := repositories.NewUserRepository(db)
+	//backupRepo := repositories.NewBackupRepository(db)
 
+	// Initialize handlers
+	oauthHandler := handlers.NewOAuthHandler(userRepo, oauthConfig)
+	// backupHandler := handlers.NewBackupHandler(storage, backupRepo)
+	// fileHandler := handlers.NewFileHandler(storage)
+
+	// Register metrics
 	metrics := newMetrics()
+	prometheus.MustRegister(metrics.uploads, metrics.downloads, metrics.deletes)
 
-	config := &Config{
-		Echo:        e,
-		Controllers: controllers,
-		Metrics:     metrics,
+	// Setup routes
+	e.Use(middlewares.ErrorHandler())
+	e.Use(middlewares.RecoveryMiddleware())
+
+	// Public routes
+	//e.GET("/health", handleHealth)
+	e.GET("/oauth/login", oauthHandler.Login)
+	e.GET("/oauth/callback", oauthHandler.Callback)
+
+	// Protected routes
+	api := e.Group("/api")
+	api.Use(middlewares.NewAuthMiddleware(userRepo, oauthConfig).RequireAuth())
+	{
+		// api.POST("/backup", backupHandler.Backup)
+		// api.POST("/upload", fileHandler.Upload)
+		//api.GET("/download/:id", fileHandler.Download)
+		//api.DELETE("/delete/:id", fileHandler.Delete)
 	}
 
-	if err := registerRoutes(config, authMiddleware); err != nil {
-		logger.WithError(err).Error("Failed to register routes")
-		return nil, fmt.Errorf("failed to register routes: %w", err)
-	}
+	// Metrics endpoint
+	e.GET("/metrics", echo.WrapHandler(promhttp.Handler()))
 
 	return e, nil
 }
 
-func setupStorage() (storage.Storage, error) {
-	config := storage.R2Config{
-		Bucket:          os.Getenv("R2_BUCKET_NAME"),
-		AccountID:       os.Getenv("R2_ACCOUNT_ID"),
-		AccessKeyID:     os.Getenv("R2_ACCESS_KEY_ID"),
-		SecretAccessKey: os.Getenv("R2_SECRET_ACCESS_KEY"),
-	}
+// func setupStorage() (storage.Storage, error) {
+// 	cfg := storage.R2Config{
+// 		Bucket:          os.Getenv("R2_BUCKET_NAME"),
+// 		AccountID:       os.Getenv("R2_ACCOUNT_ID"),
+// 		AccessKeyID:     os.Getenv("R2_ACCESS_KEY_ID"),
+// 		SecretAccessKey: os.Getenv("R2_SECRET_ACCESS_KEY"),
+// 	}
 
-	if err := config.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid R2 configuration: %w", err)
-	}
+// 	if err := cfg.Validate(); err != nil {
+// 		return nil, fmt.Errorf("invalid R2 config: %w", err)
+// 	}
 
-	return storage.NewR2Storage(config)
-}
+// 	return storage.NewR2Storage(cfg)
+// }
 
-func registerRoutes(config *Config, auth *middlewares.AuthMiddleware) error {
-	e := config.Echo
-
-	// Public routes
-	public := e.Group("")
-	{
-		public.GET("/oauth/login", oauthHandler.Login)
-		public.GET("/oauth/callback", oauthHandler.Callback)
-		public.GET("/health", handleHealth)
-	}
-
-	// Protected API routes
-	api := e.Group("/api", auth.RequireAuth())
-	{
-		// Backup routes
-		api.POST("/backup", config.Controllers.Backup.Backup)
-
-		// File routes
-		api.POST("/upload", config.Controllers.File.Upload)
-		api.GET("/download/:id", config.Controllers.File.Download)
-		api.DELETE("/delete/:id", config.Controllers.File.Delete)
-	}
-
-	// Metrics route
-	e.GET("/metrics", echo.WrapHandler(promhttp.Handler()))
-
-	return nil
-}
-
-// handleHealth handles the health check endpoint
-func handleHealth(c echo.Context) error {
-	return c.JSON(http.StatusOK, map[string]string{
-		"status": "ok",
-		"info":   "Service is healthy",
-	})
-}
+// func handleHealth(c echo.Context) error {
+// 	return c.JSON(http.StatusOK, map[string]interface{}{
+// 		"status":  "healthy",
+// 		"version": "1.0.0",
+// 	})
+// }

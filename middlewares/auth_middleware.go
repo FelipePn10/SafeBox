@@ -24,21 +24,39 @@ type AuthConfig struct {
 }
 
 type AuthMiddleware struct {
-	oauthConfig *oauth2.Config
 	userRepo    repositories.UserRepository
+	oauthConfig *oauth2.Config
 }
 
-func NewAuthMiddleware(userRepo repositories.UserRepository) *AuthMiddleware {
+func NewAuthMiddleware(userRepo repositories.UserRepository, oauthConfig *oauth2.Config) *AuthMiddleware {
 	return &AuthMiddleware{
-		userRepo: userRepo,
+		userRepo:    userRepo,
+		oauthConfig: oauthConfig,
 	}
 }
 
-func (am *AuthMiddleware) RequireAuth(scopes ...string) echo.MiddlewareFunc {
-	return am.WithConfig(AuthConfig{
-		RequireAuth:    true,
-		RequiredScopes: scopes,
-	})
+func (am *AuthMiddleware) RequireAuth() echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			token := c.Request().Header.Get("Authorization")
+			if token == "" {
+				return c.JSON(http.StatusUnauthorized, map[string]string{"error": "authorization token required"})
+			}
+
+			userInfo, err := am.validateToken(c.Request().Context(), token)
+			if err != nil {
+				return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid token"})
+			}
+
+			user, err := am.userRepo.FindByEmail(userInfo["email"].(string))
+			if err != nil {
+				return c.JSON(http.StatusUnauthorized, map[string]string{"error": "user not found"})
+			}
+
+			c.Set("user", user)
+			return next(c)
+		}
+	}
 }
 
 func (am *AuthMiddleware) RequirePlan(plan string) echo.MiddlewareFunc {
@@ -82,7 +100,7 @@ func (am *AuthMiddleware) validateAuth(c echo.Context) (*models.OAuthUser, error
 	}
 
 	// Verifica token com Google
-	userInfo, err := am.verifyGoogleToken(c.Request().Context(), token)
+	userInfo, err := am.validateToken(c.Request().Context(), token)
 	if err != nil {
 		return nil, fmt.Errorf("invalid token: %v", err)
 	}
@@ -96,21 +114,21 @@ func (am *AuthMiddleware) validateAuth(c echo.Context) (*models.OAuthUser, error
 	return user, nil
 }
 
-func (am *AuthMiddleware) verifyGoogleToken(ctx context.Context, token string) (map[string]interface{}, error) {
+func (am *AuthMiddleware) validateToken(ctx context.Context, token string) (map[string]interface{}, error) {
 	client := am.oauthConfig.Client(ctx, &oauth2.Token{AccessToken: token})
 	resp, err := client.Get("https://www.googleapis.com/oauth2/v3/userinfo")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("token validation failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("google API returned status: %d", resp.StatusCode)
+		return nil, fmt.Errorf("invalid token status: %d", resp.StatusCode)
 	}
 
 	var userInfo map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&userInfo); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to decode user info: %w", err)
 	}
 
 	return userInfo, nil
