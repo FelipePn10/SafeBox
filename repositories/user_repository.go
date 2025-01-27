@@ -16,6 +16,7 @@ type UserRepository interface {
 	UpdateStorageUsed(username string, size int64) error
 	CreateUser(user *models.OAuthUser) error
 	Update(user *models.OAuthUser) error
+	ListAllUsers() ([]*models.OAuthUser, error)
 }
 
 // userRepositoryImpl implements UserRepository interface
@@ -73,4 +74,12 @@ func (r *userRepositoryImpl) CreateOrUpdate(user *models.OAuthUser) error {
 			TokenExpiry:  user.TokenExpiry,
 		}).
 		FirstOrCreate(user).Error
+}
+
+func (r *userRepositoryImpl) ListAllUsers() ([]*models.OAuthUser, error) {
+	var users []*models.OAuthUser
+	if err := r.db.Find(&users).Error; err != nil {
+		return nil, err
+	}
+	return users, nil
 }

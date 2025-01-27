@@ -1,10 +1,13 @@
 package routes
 
 import (
+	"SafeBox/graph"
 	"SafeBox/handlers"
 	"SafeBox/middlewares"
 	"SafeBox/repositories"
 	"SafeBox/services"
+	"github.com/99designs/gqlgen/graphql/handler"
+	"github.com/99designs/gqlgen/graphql/playground"
 
 	// "SafeBox/storage"
 	// "fmt"
@@ -72,6 +75,14 @@ func NewRouteConfig(
 	oauthHandler := handlers.NewOAuthHandler(userRepo, oauthConfig)
 	// backupHandler := handlers.NewBackupHandler(storage, backupRepo)
 	// fileHandler := handlers.NewFileHandler(storage)
+
+	resolver := &graph.Resolver{DB: db}
+	graphQLServer := handler.NewDefaultServer(graph.NewExecutableSchema(graph.Config{Resolvers: resolver}))
+	e.POST("/query", func(c echo.Context) error {
+		graphQLServer.ServeHTTP(c.Response(), c.Request())
+		return nil
+	})
+	e.GET("/", echo.WrapHandler(playground.Handler("GraphQL playground", "/query")))
 
 	// Register metrics
 	metrics := newMetrics()

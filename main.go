@@ -1,6 +1,7 @@
 package main
 
 import (
+	"SafeBox/graph"
 	"SafeBox/migrations"
 	"SafeBox/models"
 	"SafeBox/repositories"
@@ -8,9 +9,14 @@ import (
 	"SafeBox/services"
 	"fmt"
 	"log"
+	_ "net/http"
 	"os"
 
+	"github.com/99designs/gqlgen/graphql/handler"
+	"github.com/99designs/gqlgen/graphql/playground"
 	"github.com/joho/godotenv"
+	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v4/middleware"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"gorm.io/driver/postgres"
@@ -18,56 +24,69 @@ import (
 )
 
 func main() {
-	if err := godotenv.Load(); err != nil {
-		log.Fatalf("Error loading .env file: %v", err)
-	}
+	// Carregar variáveis de ambiente
+	loadEnv()
 
-	// Initialize database
+	// Inicializar banco de dados
 	db := initDB()
 
-	// Run migrations
-	if err := migrations.RunMigrations(db); err != nil {
-		log.Fatalf("Failed to run migrations: %v", err)
-	}
+	// Executar migrações
+	runMigrations(db)
 
-	// Seed permissions
-	if err := seedPermissions(db); err != nil {
-		log.Fatalf("Failed to seed permissions: %v", err)
-	}
+	// Seed das permissões
+	seedDatabase(db)
 
-	// Configure OAuth
-	oauthConfig := &oauth2.Config{
-		ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
-		ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
-		RedirectURL:  os.Getenv("OAUTH_REDIRECT_URL"),
-		Scopes: []string{
-			"https://www.googleapis.com/auth/userinfo.email",
-			"https://www.googleapis.com/auth/userinfo.profile",
-		},
-		Endpoint: google.Endpoint,
-	}
+	// Configurar OAuth2
+	oauthConfig := configureOAuth()
 
-	// Initialize repositories and services
+	// Inicializar repositórios e serviços
 	userRepo := repositories.NewUserRepository(db)
 	backupRepo := repositories.NewBackupRepository(db)
 	authService := services.NewAuthService(userRepo, oauthConfig)
 	backupService := services.NewBackupService(backupRepo)
 
-	// Setup routes
-	e, err := routes.NewRouteConfig(authService, backupService, db, oauthConfig)
-	if err != nil {
-		log.Fatalf("Failed to configure routes: %v", err)
+	// Configurar GraphQL
+	resolver := &graph.Resolver{
+		DB: db,
 	}
+	srv := handler.NewDefaultServer(
+		graph.NewExecutableSchema(
+			graph.Config{
+				Resolvers: resolver,
+			},
+		),
+	)
 
-	// Start server
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
+	// Configurar servidor Echo
+	e := echo.New()
+	e.Use(middleware.Logger())
+	e.Use(middleware.Recover())
+	e.Use(middleware.CORS())
+
+	// Configurar rotas REST
+	// Aqui mudamos para usar NewRouteConfig em vez de ConfigureRoutes
+	routeConfig, err := routes.NewRouteConfig(authService, backupService, db, oauthConfig)
+	if err != nil {
+		log.Fatalf("Erro ao configurar rotas: %v", err)
 	}
-	log.Printf("Server starting on :%s", port)
-	log.Fatal(e.Start(":" + port))
+	e = routeConfig
+
+	// Configurar rotas GraphQL
+	e.GET("/playground", echo.WrapHandler(playground.Handler("GraphQL playground", "/query")))
+	e.POST("/query", echo.WrapHandler(srv))
+
+	// Iniciar servidor
+	startServer(e)
 }
 
+// Carregar variáveis de ambiente
+func loadEnv() {
+	if err := godotenv.Load(); err != nil {
+		log.Fatalf("Erro ao carregar o arquivo .env: %v", err)
+	}
+}
+
+// Inicializar banco de dados
 func initDB() *gorm.DB {
 	dsn := fmt.Sprintf(
 		"host=%s port=%s user=%s password=%s dbname=%s sslmode=disable TimeZone=UTC",
@@ -80,12 +99,21 @@ func initDB() *gorm.DB {
 
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
 	if err != nil {
-		log.Fatalf("Failed to connect to database: %v", err)
+		log.Fatalf("Falha ao conectar no banco de dados: %v", err)
 	}
 	return db
 }
 
-func seedPermissions(db *gorm.DB) error {
+// Executar migrações
+func runMigrations(db *gorm.DB) {
+	if err := migrations.RunMigrations(db); err != nil {
+		log.Fatalf("Falha ao executar migrações: %v", err)
+	}
+	log.Println("Migrações executadas com sucesso!")
+}
+
+// Seed do banco de dados (permissões)
+func seedDatabase(db *gorm.DB) {
 	permissions := []models.PermissionModel{
 		{Name: string(models.READ)},
 		{Name: string(models.WRITE)},
@@ -95,11 +123,33 @@ func seedPermissions(db *gorm.DB) error {
 	}
 
 	for _, p := range permissions {
-		result := db.FirstOrCreate(&p, "name = ?", p.Name)
-		if result.Error != nil {
-			return fmt.Errorf("failed to seed permission %s: %w", p.Name, result.Error)
+		if err := db.FirstOrCreate(&p, "name = ?", p.Name).Error; err != nil {
+			log.Fatalf("Falha ao seedar permissão %s: %v", p.Name, err)
 		}
 	}
-	log.Println("Permissions seeded successfully")
-	return nil
+	log.Println("Permissões seedadas com sucesso!")
+}
+
+// Configurar OAuth2
+func configureOAuth() *oauth2.Config {
+	return &oauth2.Config{
+		ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
+		ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
+		RedirectURL:  os.Getenv("OAUTH_REDIRECT_URL"),
+		Scopes: []string{
+			"https://www.googleapis.com/auth/userinfo.email",
+			"https://www.googleapis.com/auth/userinfo.profile",
+		},
+		Endpoint: google.Endpoint,
+	}
+}
+
+// Iniciar servidor
+func startServer(e *echo.Echo) {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	log.Printf("Servidor iniciado na porta :%s", port)
+	log.Fatal(e.Start(":" + port))
 }
