@@ -1,0 +1,24 @@
+schema:
+  - graph/*.graphqls
+exec:
+  filename: graph/generated.go
+  package: graph
+model:
+  filename: graph/model/models_gen.go
+  package: model
+resolver:
+  layout: follow-schema
+  dir: graph
+  package: graph
+  filename_template: "{name}.resolvers.go"
+
+# Isso é importante para mapear o User do GraphQL para o OAuthUser do seu modelo
+models:
+  User:
+    model: SafeBox/models.OAuthUser # <- Este é o mapeamento crucial
+  ID:
+    model:
+      - github.com/99designs/gqlgen/graphql.ID
+      - github.com/99designs/gqlgen/graphql.Int
+      - github.com/99designs/gqlgen/graphql.Int64
+      - github.com/99designs/gqlgen/graphql.Int32
