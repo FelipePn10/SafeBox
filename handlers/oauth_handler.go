@@ -42,9 +42,21 @@ func getRedirectURL() string {
 
 func (h *OAuthHandler) Login(c echo.Context) error {
 	state := generateStateToken()
+	if state == "" {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed_to_generate_state"})
+	}
 	h.stateStore.Store(state, time.Now().Add(5*time.Minute))
 
+	// Log
+	logrus.WithFields(logrus.Fields{
+		"state":        state,
+		"redirect_url": h.config.RedirectURL,
+		"client_id":    h.config.ClientID,
+	}).Info("Iniciando fluxo OAuth")
+
 	url := h.config.AuthCodeURL(state)
+	logrus.Info("AuthCodeURL gerada: ", url)
+
 	return c.Redirect(http.StatusTemporaryRedirect, url)
 }
 

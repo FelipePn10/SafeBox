@@ -132,10 +132,15 @@ func seedDatabase(db *gorm.DB) {
 
 // Configurar OAuth2
 func configureOAuth() *oauth2.Config {
+	redirectURL := os.Getenv("OAUTH_REDIRECT_URL")
+	if redirectURL == "" {
+		redirectURL = "http://localhost:8080/oauth/callback" // Default local
+	}
+
 	return &oauth2.Config{
 		ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
 		ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
-		RedirectURL:  os.Getenv("OAUTH_REDIRECT_URL"),
+		RedirectURL:  redirectURL,
 		Scopes: []string{
 			"https://www.googleapis.com/auth/userinfo.email",
 			"https://www.googleapis.com/auth/userinfo.profile",

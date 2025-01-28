@@ -11,10 +11,10 @@ type OAuthUser struct {
 	Password     string
 	Email        string `gorm:"unique;not null"`
 	Username     string `gorm:"not null"`
-	OAuthID      string `gorm:"uniqueIndex"`
+	OAuthID      string `gorm:"column:oauth_id"`
 	Avatar       string
 	Provider     string
-	Permissions  []PermissionModel `gorm:"many2many:user_permissions;"` // Relação many-to-many
+	Permissions  []PermissionModel `gorm:"many2many:user_permissions;"`
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 	StorageUsed  int64
