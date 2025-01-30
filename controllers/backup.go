@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"SafeBox/services/storage"
 	"bytes"
 	"context"
 	"errors"
@@ -17,7 +18,6 @@ import (
 
 	"SafeBox/models"
 	"SafeBox/repositories"
-	"SafeBox/storage"
 	"SafeBox/utils"
 )
 

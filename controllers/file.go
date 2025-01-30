@@ -3,7 +3,7 @@ package controllers
 import (
 	"SafeBox/models"
 	"SafeBox/repositories"
-	"SafeBox/storage"
+	"SafeBox/services/storage"
 	"SafeBox/utils"
 	"bytes"
 	"io"

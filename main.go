@@ -1,19 +1,23 @@
 package main
 
 import (
+	"SafeBox/config"
 	"SafeBox/graph"
+	"SafeBox/handlers"
+	"SafeBox/jobs"
+	"SafeBox/middlewares"
 	"SafeBox/migrations"
 	"SafeBox/models"
 	"SafeBox/repositories"
-	"SafeBox/routes"
 	"SafeBox/services"
+	_ "SafeBox/services/storage"
+	"SafeBox/storage"
+	"context"
 	"fmt"
+	"github.com/99designs/gqlgen/graphql/playground"
 	"log"
-	_ "net/http"
 	"os"
 
-	"github.com/99designs/gqlgen/graphql/handler"
-	"github.com/99designs/gqlgen/graphql/playground"
 	"github.com/joho/godotenv"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
@@ -24,60 +28,72 @@ import (
 )
 
 func main() {
-	// Carregar variáveis de ambiente
-	loadEnv()
+	if err := godotenv.Load(); err != nil {
+		log.Fatalf("Error loading .env file: %v", err)
+	}
 
-	// Inicializar banco de dados
+	config.InitRedis()
 	db := initDB()
-
-	// Executar migrações
 	runMigrations(db)
-
-	// Seed das permissões
 	seedDatabase(db)
 
-	// Configurar OAuth2
-	oauthConfig := configureOAuth()
-
-	// Inicializar repositórios e serviços
-	userRepo := repositories.NewUserRepository(db)
-	backupRepo := repositories.NewBackupRepository(db)
-	authService := services.NewAuthService(userRepo, oauthConfig)
-	backupService := services.NewBackupService(backupRepo)
-
-	// Configurar GraphQL
-	resolver := &graph.Resolver{
-		DB: db,
+	p2pStorage, err := storage.NewP2PStorageAdapter(config.RedisClient)
+	if err != nil {
+		log.Fatalf("Failed to initialize P2P storage: %v", err)
 	}
-	srv := handler.NewDefaultServer(
-		graph.NewExecutableSchema(
-			graph.Config{
-				Resolvers: resolver,
-			},
-		),
+
+	// Inicializar storages
+	baseDir := os.Getenv("STORAGE_BASE_DIR")
+	if baseDir == "" {
+		baseDir = "./storage"
+	}
+
+	localStorage := storage.NewLocalStorage(baseDir)
+	p2pStorage := storage.NewP2PStorage()
+	r2Storage := storage.NewR2Storage()
+	unifiedStorage := storage.NewUnifiedStorage(localStorage, p2pStorage, r2Storage)
+
+	// Serviços
+	quotaRepo := repositories.NewQuotaRepository(db)
+	quotaService := services.NewQuotaService(quotaRepo, unifiedStorage, config.RedisClient)
+	quotaHandler := handlers.NewQuotaHandler(quotaService)
+	quotaMiddleware := middlewares.NewQuotaMiddleware(quotaService, config.RedisClient)
+
+	// Configurar job de reconciliação com processamento em batch
+	batchProcessor := jobs.NewBatchProcessor(1000, func(userIDs []uint) error {
+		ctx := context.Background()
+		for _, userID := range userIDs {
+			if err := quotaRepo.ReconcileUserQuota(ctx, userID); err != nil {
+				log.Printf("Error reconciling user %d: %v", userID, err)
+			}
+		}
+		return nil
+	})
+
+	go jobs.StartReconciliationJob(quotaRepo, unifiedStorage, batchProcessor)
+
+	// Echo
+	e := echo.New()
+	e.Use(
+		middleware.Logger(),
+		middleware.Recover(),
+		middleware.CORS(),
+		quotaMiddleware.EnforceQuota,
 	)
 
-	// Configurar servidor Echo
-	e := echo.New()
-	e.Use(middleware.Logger())
-	e.Use(middleware.Recover())
-	e.Use(middleware.CORS())
+	// Rotas
+	e.GET("/api/quota", quotaHandler.GetQuotaUsage)
 
-	// Configurar rotas REST
-	// Aqui mudamos para usar NewRouteConfig em vez de ConfigureRoutes
-	routeConfig, err := routes.NewRouteConfig(authService, backupService, db, oauthConfig)
-	if err != nil {
-		log.Fatalf("Erro ao configurar rotas: %v", err)
-	}
-	e = routeConfig
-
-	// Configurar rotas GraphQL
-	e.GET("/playground", echo.WrapHandler(playground.Handler("GraphQL playground", "/query")))
+	// GraphQL
+	srv := graph.NewGraphQLHandler(db)
+	e.GET("/playground", echo.WrapHandler(playground.Handler("GraphQL Playground", "/query")))
 	e.POST("/query", echo.WrapHandler(srv))
 
-	// Iniciar servidor
 	startServer(e)
 }
+
+// Funções auxiliares (mantidas sem alterações)
+// ... [initDB, runMigrations, seedDatabase, startServer]s
 
 // Carregar variáveis de ambiente
 func loadEnv() {

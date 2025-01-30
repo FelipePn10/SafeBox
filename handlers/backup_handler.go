@@ -1,11 +1,10 @@
 package handlers
 
 import (
+	"SafeBox/services/storage"
 	"net/http"
 
 	"SafeBox/repositories"
-	"SafeBox/storage"
-
 	"github.com/labstack/echo/v4"
 )
 
