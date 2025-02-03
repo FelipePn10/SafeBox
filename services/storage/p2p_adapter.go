@@ -7,26 +7,18 @@ import (
 	"sync"
 	"time"
 
-	"SafeBox/p2p"
 	"github.com/redis/go-redis/v9"
 )
 
 type P2PStorageAdapter struct {
-	p2pClient  *p2p.Store
-	redisCache *redis.Client
-	cacheMutex sync.RWMutex
+	redisClient *redis.Client
+	cacheMutex  sync.RWMutex
 }
 
-func NewP2PStorageAdapter(redisClient *redis.Client) (*P2PStorageAdapter, error) {
-	store, err := p2p.NewStore()
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize p2p store: %w", err)
-	}
-
+func NewP2PStorageAdapter(redisClient *redis.Client) *P2PStorageAdapter {
 	return &P2PStorageAdapter{
-		p2pClient:  store,
-		redisCache: redisClient,
-	}, nil
+		redisClient: redisClient,
+	}
 }
 
 func (pa *P2PStorageAdapter) Save(ctx context.Context, file io.Reader, userID uint, fileName string) error {
@@ -58,7 +50,7 @@ func (pa *P2PStorageAdapter) Save(ctx context.Context, file io.Reader, userID ui
 
 	// Adicionar à lista de arquivos do usuário
 	userFilesKey := fmt.Sprintf("p2p:user:%d:files", userID)
-	if err := pa.redisCache.SAdd(ctx, userFilesKey, fileKey).Err(); err != nil {
+	if err := pa.redisClient.SAdd(ctx, userFilesKey, fileKey).Err(); err != nil {
 		return fmt.Errorf("failed to update user files: %w", err)
 	}
 

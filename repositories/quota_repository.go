@@ -1,4 +1,3 @@
-// Package repositories gerencia o acesso aos dados de cota
 package repositories
 
 import (
@@ -9,10 +8,9 @@ import (
 
 type QuotaRepositoryInterface interface {
 	GetUserQuota(ctx context.Context, userID uint) (*models.UserQuota, error)
-	UpdateUserQuota(ctx context.Context, userQuota *models.UserQuota) error
-	CreateInitialQuota(ctx context.Context, userID uint) error
-	GetAllUsers(ctx context.Context) ([]models.UserQuota, error)
-	UpdateUsage(ctx context.Context, userID uint, used int64) error
+	UpdateUserQuota(ctx context.Context, quota *models.UserQuota) error
+	GetTotalUsage(ctx context.Context, userID uint) (int64, error)
+	ReconcileUserQuota(ctx context.Context, userID uint) error // Adicionando este método
 }
 
 type QuotaRepository struct {
@@ -23,33 +21,35 @@ func NewQuotaRepository(db *gorm.DB) QuotaRepositoryInterface {
 	return &QuotaRepository{db: db}
 }
 
-func (r *QuotaRepository) GetUserQuota(ctx context.Context, userID uint) (*models.UserQuota, error) {
+func (qr *QuotaRepository) GetUserQuota(ctx context.Context, userID uint) (*models.UserQuota, error) {
 	var quota models.UserQuota
-	result := r.db.WithContext(ctx).Where("user_id = ?", userID).First(&quota)
-	return &quota, result.Error
-}
-
-func (r *QuotaRepository) UpdateUserQuota(ctx context.Context, userQuota *models.UserQuota) error {
-	return r.db.WithContext(ctx).Save(userQuota).Error
-}
-
-func (r *QuotaRepository) CreateInitialQuota(ctx context.Context, userID uint) error {
-	quota := &models.UserQuota{
-		UserID: userID,
-		Plan:   models.Free,
+	if err := qr.db.Where("user_id = ?", userID).First(&quota).Error; err != nil {
+		return nil, err
 	}
-	quota.SetDefaults()
-	return r.db.WithContext(ctx).Create(quota).Error
+	return &quota, nil
 }
 
-func (r *QuotaRepository) GetAllUsers(ctx context.Context) ([]models.UserQuota, error) {
-	var quotas []models.UserQuota
-	result := r.db.WithContext(ctx).Find(&quotas)
-	return quotas, result.Error
+func (qr *QuotaRepository) UpdateUserQuota(ctx context.Context, quota *models.UserQuota) error {
+	return qr.db.Save(quota).Error
 }
 
-func (r *QuotaRepository) UpdateUsage(ctx context.Context, userID uint, used int64) error {
-	return r.db.WithContext(ctx).Model(&models.UserQuota{}).
-		Where("user_id = ?", userID).
-		Update("used", used).Error
+func (qr *QuotaRepository) GetTotalUsage(ctx context.Context, userID uint) (int64, error) {
+	var total int64
+	if err := qr.db.Model(&models.UserQuota{}).Where("user_id = ?", userID).Sum("size", &total).Error; err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
+func (qr *QuotaRepository) ReconcileUserQuota(ctx context.Context, userID uint) error {
+	actualUsed, err := qr.GetTotalUsage(ctx, userID)
+	if err != nil {
+		return err
+	}
+	quota, err := qr.GetUserQuota(ctx, userID)
+	if err != nil {
+		return err
+	}
+	quota.Used = actualUsed
+	return qr.UpdateUserQuota(ctx, quota)
 }

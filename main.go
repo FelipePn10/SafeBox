@@ -4,53 +4,44 @@ import (
 	"SafeBox/config"
 	"SafeBox/graph"
 	"SafeBox/handlers"
-	"SafeBox/jobs"
+	jobs "SafeBox/job"
 	"SafeBox/middlewares"
 	"SafeBox/migrations"
 	"SafeBox/models"
 	"SafeBox/repositories"
 	"SafeBox/services"
-	_ "SafeBox/services/storage"
-	"SafeBox/storage"
-	"context"
+	"SafeBox/services/storage"
+	_ "context"
 	"fmt"
 	"github.com/99designs/gqlgen/graphql/playground"
-	"log"
-	"os"
-
 	"github.com/joho/godotenv"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
-	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/google"
+	_ "golang.org/x/oauth2"
+	_ "golang.org/x/oauth2/google"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	"log"
+	"os"
 )
 
 func main() {
 	if err := godotenv.Load(); err != nil {
 		log.Fatalf("Error loading .env file: %v", err)
 	}
-
 	config.InitRedis()
 	db := initDB()
 	runMigrations(db)
 	seedDatabase(db)
-
-	p2pStorage, err := storage.NewP2PStorageAdapter(config.RedisClient)
-	if err != nil {
-		log.Fatalf("Failed to initialize P2P storage: %v", err)
-	}
 
 	// Inicializar storages
 	baseDir := os.Getenv("STORAGE_BASE_DIR")
 	if baseDir == "" {
 		baseDir = "./storage"
 	}
-
 	localStorage := storage.NewLocalStorage(baseDir)
-	p2pStorage := storage.NewP2PStorage()
-	r2Storage := storage.NewR2Storage()
+	p2pStorage := storage.NewP2PStorage(config.RedisClient) // Corrigindo a chamada
+	r2Storage, _ := storage.NewR2Storage()
 	unifiedStorage := storage.NewUnifiedStorage(localStorage, p2pStorage, r2Storage)
 
 	// Serviços
@@ -60,17 +51,7 @@ func main() {
 	quotaMiddleware := middlewares.NewQuotaMiddleware(quotaService, config.RedisClient)
 
 	// Configurar job de reconciliação com processamento em batch
-	batchProcessor := jobs.NewBatchProcessor(1000, func(userIDs []uint) error {
-		ctx := context.Background()
-		for _, userID := range userIDs {
-			if err := quotaRepo.ReconcileUserQuota(ctx, userID); err != nil {
-				log.Printf("Error reconciling user %d: %v", userID, err)
-			}
-		}
-		return nil
-	})
-
-	go jobs.StartReconciliationJob(quotaRepo, unifiedStorage, batchProcessor)
+	go jobs.StartReconciliationJob(quotaRepo, unifiedStorage)
 
 	// Echo
 	e := echo.New()
@@ -93,16 +74,6 @@ func main() {
 }
 
 // Funções auxiliares (mantidas sem alterações)
-// ... [initDB, runMigrations, seedDatabase, startServer]s
-
-// Carregar variáveis de ambiente
-func loadEnv() {
-	if err := godotenv.Load(); err != nil {
-		log.Fatalf("Erro ao carregar o arquivo .env: %v", err)
-	}
-}
-
-// Inicializar banco de dados
 func initDB() *gorm.DB {
 	dsn := fmt.Sprintf(
 		"host=%s port=%s user=%s password=%s dbname=%s sslmode=disable TimeZone=UTC",
@@ -112,7 +83,6 @@ func initDB() *gorm.DB {
 		os.Getenv("DB_PASSWORD"),
 		os.Getenv("DB_NAME"),
 	)
-
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
 	if err != nil {
 		log.Fatalf("Falha ao conectar no banco de dados: %v", err)
@@ -120,7 +90,6 @@ func initDB() *gorm.DB {
 	return db
 }
 
-// Executar migrações
 func runMigrations(db *gorm.DB) {
 	if err := migrations.RunMigrations(db); err != nil {
 		log.Fatalf("Falha ao executar migrações: %v", err)
@@ -128,7 +97,6 @@ func runMigrations(db *gorm.DB) {
 	log.Println("Migrações executadas com sucesso!")
 }
 
-// Seed do banco de dados (permissões)
 func seedDatabase(db *gorm.DB) {
 	permissions := []models.PermissionModel{
 		{Name: string(models.READ)},
@@ -137,7 +105,6 @@ func seedDatabase(db *gorm.DB) {
 		{Name: string(models.ADMIN)},
 		{Name: string(models.PermissionBackup)},
 	}
-
 	for _, p := range permissions {
 		if err := db.FirstOrCreate(&p, "name = ?", p.Name).Error; err != nil {
 			log.Fatalf("Falha ao seedar permissão %s: %v", p.Name, err)
@@ -146,26 +113,6 @@ func seedDatabase(db *gorm.DB) {
 	log.Println("Permissões seedadas com sucesso!")
 }
 
-// Configurar OAuth2
-func configureOAuth() *oauth2.Config {
-	redirectURL := os.Getenv("OAUTH_REDIRECT_URL")
-	if redirectURL == "" {
-		redirectURL = "http://localhost:8080/oauth/callback" // Default local
-	}
-
-	return &oauth2.Config{
-		ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
-		ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
-		RedirectURL:  redirectURL,
-		Scopes: []string{
-			"https://www.googleapis.com/auth/userinfo.email",
-			"https://www.googleapis.com/auth/userinfo.profile",
-		},
-		Endpoint: google.Endpoint,
-	}
-}
-
-// Iniciar servidor
 func startServer(e *echo.Echo) {
 	port := os.Getenv("PORT")
 	if port == "" {
